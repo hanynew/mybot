@@ -2,26 +2,32 @@ import telebot
 from telebot.types import ReplyKeyboardMarkup, KeyboardButton, WebAppInfo
 import json
 import os
-import threading
-from flask import Flask
+from flask import Flask, request
 
-# توكن البوت والآيدي الخاص بك
+# بياناتك الجاهزة
 API_TOKEN = '8840162276:AAEs2AlVqsdRBCaqa5yMLsw_noCb7cv1dn0'
 ADMIN_ID = '8227136699'
+RENDER_URL = 'https://mybot-1-d8ar.onrender.com'
 
 bot = telebot.TeleBot(API_TOKEN)
 app = Flask(__name__)
 
-# --- 1. سيرفر الويب الوهمي لإبقاء البوت متصلاً ---
-@app.route('/')
-def keep_alive():
-    return "سيرفر البوت يعمل بنجاح 100%"
+# --- استقبال رسائل تيليجرام وإيقاظ السيرفر ---
+@app.route('/' + API_TOKEN, methods=['POST'])
+def getMessage():
+    json_string = request.get_data().decode('utf-8')
+    update = telebot.types.Update.de_json(json_string)
+    bot.process_new_updates([update])
+    return "!", 200
 
-def run_web():
-    port = int(os.environ.get("PORT", 8080))
-    app.run(host="0.0.0.0", port=port)
+# --- صفحة تفعيل الارتباط ---
+@app.route("/")
+def webhook():
+    bot.remove_webhook()
+    bot.set_webhook(url=RENDER_URL + '/' + API_TOKEN)
+    return "تم ربط البوت بنجاح! سيعمل الآن بشكل دائم ولن يتوقف.", 200
 
-# --- 2. أوامر البوت ---
+# --- أوامر البوت ---
 @bot.message_handler(commands=['start'])
 def send_welcome(message):
     markup = ReplyKeyboardMarkup(resize_keyboard=True, row_width=1)
@@ -43,10 +49,8 @@ def handle_web_app_data(message):
         data = json.loads(message.web_app_data.data)
         service = data.get('service', 'gemini')
         
-        # رد فوري للعميل
         bot.send_message(chat_id, "طلبك قيد التنفيذ يرجى الانتظار")
         
-        # تجهيز وإرسال البيانات للإدارة
         if service == "spotify":
             admin_msg = f"🎧 **طلب تفعيل Spotify**\n👤 العميل: {username}\n🔗 الرابط: `{data.get('link', 'غير متوفر')}`"
         elif service == "youtube":
@@ -57,10 +61,8 @@ def handle_web_app_data(message):
         bot.send_message(ADMIN_ID, admin_msg, parse_mode="Markdown")
         
     except Exception as e:
-        bot.send_message(ADMIN_ID, f"⚠️ تنبيه نظام: لم يتم معالجة البيانات بشكل صحيح. السبب: {str(e)}")
+        bot.send_message(ADMIN_ID, f"⚠️ خطأ: {str(e)}")
         bot.send_message(chat_id, "حدث خطأ، يرجى المحاولة مرة أخرى.")
 
-# --- 3. تشغيل السيرفر والبوت معاً ---
 if __name__ == "__main__":
-    threading.Thread(target=run_web).start()
-    bot.infinity_polling(timeout=10, long_polling_timeout=5)
+    app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 8080)))
