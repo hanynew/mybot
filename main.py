@@ -1,5 +1,5 @@
 import telebot
-from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton, WebAppInfo
+from telebot.types import ReplyKeyboardMarkup, KeyboardButton, WebAppInfo
 import json
 
 # توكن البوت والآيدي الخاص بك
@@ -10,21 +10,22 @@ bot = telebot.TeleBot(API_TOKEN)
 
 @bot.message_handler(commands=['start'])
 def send_welcome(message):
-    markup = InlineKeyboardMarkup(row_width=1)
+    # إنشاء لوحة مفاتيح سفلية لدعم إرسال البيانات من النماذج
+    markup = ReplyKeyboardMarkup(resize_keyboard=True, row_width=1)
     
-    # روابط النماذج الخاصة بك من جيت هوب التي أنشأناها للتو
+    # روابط النماذج
     gemini_url = "https://hanynew.github.io/mybot/gemini.html"
     spotify_url = "https://hanynew.github.io/mybot/spotify.html"
     youtube_url = "https://hanynew.github.io/mybot/youtube.html"
     
-    # أزرار فتح النماذج المنبثقة
+    # أزرار فتح النماذج
     markup.add(
-        InlineKeyboardButton("🤖 تفعيل Gemini Pro", web_app=WebAppInfo(url=gemini_url)),
-        InlineKeyboardButton("🎧 تفعيل Spotify Premium", web_app=WebAppInfo(url=spotify_url)),
-        InlineKeyboardButton("▶️ تفعيل YouTube Premium", web_app=WebAppInfo(url=youtube_url))
+        KeyboardButton("🤖 تفعيل Gemini Pro", web_app=WebAppInfo(url=gemini_url)),
+        KeyboardButton("🎧 تفعيل Spotify Premium", web_app=WebAppInfo(url=spotify_url)),
+        KeyboardButton("▶️ تفعيل YouTube Premium", web_app=WebAppInfo(url=youtube_url))
     )
     
-    bot.send_message(message.chat.id, "أهلاً بك!\nاختر الخدمة المطلوبة من الأزرار أدناه لتقديم طلبك:", reply_markup=markup)
+    bot.send_message(message.chat.id, "أهلاً بك!\nالرجاء اختيار الخدمة المطلوبة من القائمة بالأسفل 👇:", reply_markup=markup)
 
 # استقبال البيانات من النماذج
 @bot.message_handler(content_types=['web_app_data'])
@@ -33,11 +34,12 @@ def handle_web_app_data(message):
     username = f"@{message.from_user.username}" if message.from_user.username else "بدون معرف"
     
     try:
+        # قراءة البيانات القادمة من النافذة
         data = json.loads(message.web_app_data.data)
         service = data.get('service')
         
-        # الرد على العميل واختفاء النافذة كما طلبت تماماً
-        bot.send_message(chat_id, "طلبك قيد المعالجة\nالادارة: bdallhshay7")
+        # إرسال رسالة التأكيد للعميل حسب طلبك
+        bot.send_message(chat_id, "طلبك قيد التنفيذ يرجى الانتظار")
         
         # تجهيز الرسالة التي ستصلك للإدارة
         if service == "gemini":
@@ -68,7 +70,7 @@ def handle_web_app_data(message):
         bot.send_message(ADMIN_ID, admin_msg, parse_mode="Markdown")
         
     except Exception as e:
-        bot.send_message(chat_id, "حدث خطأ، يرجى المحاولة مرة أخرى.")
+        bot.send_message(chat_id, "حدث خطأ أثناء إرسال الطلب، يرجى المحاولة مرة أخرى.")
 
 print("البوت يعمل الآن...")
 bot.infinity_polling()
