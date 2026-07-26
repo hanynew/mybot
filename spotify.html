@@ -1,0 +1,38 @@
+<!DOCTYPE html>
+<html dir="rtl" lang="ar">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>تفعيل Spotify Premium</title>
+    <script src="https://telegram.org/js/telegram-web-app.js"></script>
+    <style>
+        body { background-color: #121212; color: white; font-family: Tahoma, Arial, sans-serif; margin: 0; padding: 20px; display: flex; justify-content: center; align-items: center; height: 100vh; }
+        .container { width: 100%; max-width: 400px; background-color: #181818; padding: 25px; border-radius: 12px; text-align: center; }
+        h2 { color: #1DB954; margin-bottom: 25px; }
+        label { display: block; text-align: right; margin-bottom: 10px; font-weight: bold; font-size: 14px; }
+        input { width: 100%; padding: 14px; margin-bottom: 25px; border: 1px solid #333; border-radius: 8px; background-color: #282828; color: white; box-sizing: border-box; }
+        input:focus { outline: none; border-color: #1DB954; }
+        button { width: 100%; padding: 15px; background-color: #1DB954; color: black; border: none; border-radius: 50px; font-size: 16px; font-weight: bold; cursor: pointer; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h2>🎧 تفعيل سبوتيفاي</h2>
+        <form id="spotifyForm">
+            <label>🔗 رابط صفحة التحقق (الدعوة)</label>
+            <input type="url" id="link" placeholder="أدخل الرابط هنا..." required>
+            <button type="submit">تأكيد وتفعيل سبوتيفاي</button>
+        </form>
+    </div>
+    <script>
+        let tg = window.Telegram.WebApp;
+        tg.expand();
+        document.getElementById('spotifyForm').addEventListener('submit', function(e) {
+            e.preventDefault();
+            let data = { service: "spotify", link: document.getElementById('link').value };
+            tg.sendData(JSON.stringify(data));
+            tg.close();
+        });
+    </script>
+</body>
+</html>
