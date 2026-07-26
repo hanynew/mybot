@@ -1,0 +1,38 @@
+<!DOCTYPE html>
+<html dir="rtl" lang="ar">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>تفعيل YouTube Premium</title>
+    <script src="https://telegram.org/js/telegram-web-app.js"></script>
+    <style>
+        body { background-color: #f9f9f9; color: #0f0f0f; font-family: Tahoma, Arial, sans-serif; margin: 0; padding: 20px; display: flex; justify-content: center; align-items: center; height: 100vh; }
+        .container { width: 100%; max-width: 400px; background-color: white; padding: 25px; border-radius: 12px; text-align: center; box-shadow: 0 4px 10px rgba(0,0,0,0.1); }
+        h2 { color: #FF0000; margin-bottom: 25px; }
+        label { display: block; text-align: right; margin-bottom: 10px; font-weight: bold; font-size: 14px; }
+        input { width: 100%; padding: 14px; margin-bottom: 25px; border: 1px solid #ccc; border-radius: 8px; background-color: white; color: black; box-sizing: border-box; }
+        input:focus { outline: none; border-color: #FF0000; }
+        button { width: 100%; padding: 15px; background-color: #FF0000; color: white; border: none; border-radius: 8px; font-size: 16px; font-weight: bold; cursor: pointer; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h2>▶️ تفعيل يوتيوب بريميوم</h2>
+        <form id="youtubeForm">
+            <label>🔗 رابط صفحة التحقق (الدعوة)</label>
+            <input type="url" id="link" placeholder="أدخل الرابط هنا..." required>
+            <button type="submit">تأكيد وتفعيل يوتيوب</button>
+        </form>
+    </div>
+    <script>
+        let tg = window.Telegram.WebApp;
+        tg.expand();
+        document.getElementById('youtubeForm').addEventListener('submit', function(e) {
+            e.preventDefault();
+            let data = { service: "youtube", link: document.getElementById('link').value };
+            tg.sendData(JSON.stringify(data));
+            tg.close();
+        });
+    </script>
+</body>
+</html>
