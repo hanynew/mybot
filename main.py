@@ -12,7 +12,7 @@ ADMIN_ID = '8227136699'
 bot = telebot.TeleBot(API_TOKEN)
 app = Flask(__name__)
 
-# --- 1. سيرفر الويب الوهمي لإبقاء البوت متصلاً بسيرفرات Render ---
+# --- 1. سيرفر الويب الوهمي لإبقاء البوت متصلاً ---
 @app.route('/')
 def keep_alive():
     return "سيرفر البوت يعمل بنجاح 100%"
@@ -62,7 +62,5 @@ def handle_web_app_data(message):
 
 # --- 3. تشغيل السيرفر والبوت معاً ---
 if __name__ == "__main__":
-    # تشغيل السيرفر الوهمي في مسار منفصل
     threading.Thread(target=run_web).start()
-    # تشغيل البوت بخاصية الاستمرار
     bot.infinity_polling(timeout=10, long_polling_timeout=5)
