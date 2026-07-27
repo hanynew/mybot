@@ -6,29 +6,33 @@ from flask import Flask, request
 
 API_TOKEN = '8840162276:AAEs2AlVqsdRBCaqa5yMLsw_noCb7cv1dn0'
 ADMIN_ID = '8227136699'
-
-# الرابط الصحيح والدقيق لمشروعك
 RENDER_URL = 'https://mybot-1-d6wr.onrender.com'
 
 bot = telebot.TeleBot(API_TOKEN)
 app = Flask(__name__)
 
-# --- استقبال رسائل تيليجرام وإيقاظ السيرفر ---
+# --- ربط الـ Webhook تلقائياً فور تشغيل السيرفر ---
+@app.route('/')
+def index():
+    try:
+        bot.remove_webhook()
+        bot.set_webhook(url=RENDER_URL + '/' + API_TOKEN, drop_pending_updates=True)
+        return "تم ربط البوت بنجاح! سيعمل الآن بشكل دائم ولن يتوقف.", 200
+    except Exception as e:
+        return f"حدث خطأ في الربط: {str(e)}", 500
+
+# --- استقبال رسائل تيليجرام ---
 @app.route('/' + API_TOKEN, methods=['POST'])
 def getMessage():
-    json_string = request.get_data().decode('utf-8')
-    update = telebot.types.Update.de_json(json_string)
-    bot.process_new_updates([update])
-    return "!", 200
+    try:
+        json_string = request.get_data().decode('utf-8')
+        update = telebot.types.Update.de_json(json_string)
+        bot.process_new_updates([update])
+        return "OK", 200
+    except Exception as e:
+        return "Error", 500
 
-# --- صفحة تفعيل الارتباط ---
-@app.route("/")
-def webhook():
-    bot.remove_webhook()
-    bot.set_webhook(url=RENDER_URL + '/' + API_TOKEN)
-    return "تم ربط البوت بنجاح! سيعمل الآن بشكل دائم ولن يتوقف.", 200
-
-# --- أوامر البوت ---
+# --- أوامر البوت الأساسية ---
 @bot.message_handler(commands=['start'])
 def send_welcome(message):
     markup = ReplyKeyboardMarkup(resize_keyboard=True, row_width=1)
