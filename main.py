@@ -16,7 +16,7 @@ app = Flask(__name__)
 
 # --- إعداد قاعدة البيانات MongoDB ---
 # هذا هو الرابط الخاص بك الجاهز والذي تم ربطه بنجاح
-MONGO_URI = 'mongodb+srv://hanytgribi_db_user:KA1999KA@cluster0.kwz5flj.mongodb.net/?retryWrites=true&w=majority'
+MONGO_URI = "mongodb+srv://hanytgribi_db_user:KA1999KA@cluster0.kez5fjj.mongodb.net/?appName=Cluster0"
 client = MongoClient(MONGO_URI)
 db = client['MyBotDB']
 users_collection = db['users']
