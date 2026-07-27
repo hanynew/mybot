@@ -4,14 +4,14 @@ import json
 import os
 from flask import Flask, request
 
-API_TOKEN = '8840162276:AAEs2AlVqsdRBCaqa5yMLsw_noCb7cv1dn0'
+API_TOKEN = '8840162276:AAHgHkYCbV3nSyZehDKBHmQrrAVmazRQHo4'
 ADMIN_ID = '8227136699'
 RENDER_URL = 'https://mybot-1-d6wr.onrender.com'
 
 bot = telebot.TeleBot(API_TOKEN)
 app = Flask(__name__)
 
-# صفحة الفحص والربط التلقائي
+# صفحة الفحص والربط التلقائي عند زيارة الموقع أو تفعيل المنبه
 @app.route('/')
 def index():
     try:
@@ -21,7 +21,7 @@ def index():
     except Exception as e:
         return f"خطأ: {str(e)}", 500
 
-# مسار استقبال الرسائل من تيليجرام (يدعم التوكن تلقائياً)
+# مسار استقبال الرسائل والتحديثات من تيليجرام
 @app.route('/' + API_TOKEN, methods=['POST'])
 def getMessage():
     if request.headers.get('content-type') == 'application/json':
@@ -31,6 +31,7 @@ def getMessage():
         return "OK", 200
     return "Forbidden", 403
 
+# أمر البداية وعرض أزرار المتجر
 @bot.message_handler(commands=['start'])
 def send_welcome(message):
     markup = ReplyKeyboardMarkup(resize_keyboard=True, row_width=1)
@@ -41,6 +42,7 @@ def send_welcome(message):
     )
     bot.send_message(message.chat.id, "أهلاً بك!\nالرجاء اختيار الخدمة المطلوبة من القائمة بالأسفل 👇:", reply_markup=markup)
 
+# استقبال بيانات الطلبات القادمة من صفحات الـ Web App
 @bot.message_handler(content_types=['web_app_data'])
 def handle_web_app_data(message):
     chat_id = message.chat.id
