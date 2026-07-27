@@ -45,7 +45,7 @@ def send_welcome(message):
     # 💡 التغيير السحري هنا: غيرنا كلمة "تفعيل" إلى "طلب" والرموز التعبيرية لكسر عناد تيليجرام
     btn1 = KeyboardButton(text="✨ طلب Gemini Pro", web_app=WebAppInfo(url="https://hanynew.github.io/mybot/gemini.html"))
     btn2 = KeyboardButton(text="🎶 طلب Spotify Premium", web_app=WebAppInfo(url="https://hanynew.github.io/mybot/spotify.html"))
-    btn3 = KeyboardButton(text="📺 طلب YouTube Premium", web_app=WebAppInfo(url="https://hanynew.github.io/mybot/youtube.html"))
+    btn3 = KeyboardButton(text="📺 طلب YouTube  Premium", web_app=WebAppInfo(url="https://hanynew.github.io/mybot/youtube.html"))
     
     markup.add(btn1, btn2, btn3)
     bot.send_message(message.chat.id, "أهلاً بك!\nالرجاء اختيار الخدمة المطلوبة من القائمة بالأسفل 👇:", reply_markup=markup)
