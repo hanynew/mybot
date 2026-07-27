@@ -12,12 +12,12 @@ RENDER_URL = 'https://mybot-1-d6wr.onrender.com'
 bot = telebot.TeleBot(API_TOKEN, threaded=False)
 app = Flask(__name__)
 
-# مسار المراقبة لضمان التشغيل 24/7 دون حظر من تيليجرام
+# مسار المراقبة لضمان التشغيل 24/7 دون توقف
 @app.route('/')
 def index():
     return "السيرفر يعمل بنجاح ومستيقظ 24/7!", 200
 
-# مسار إعداد الربط (تزوره مرة واحدة فقط)
+# مسار الربط 
 @app.route('/setup')
 def setup_webhook():
     try:
@@ -27,7 +27,6 @@ def setup_webhook():
     except Exception as e:
         return f"حدث خطأ أثناء الربط: {e}", 500
 
-# مسار استقبال رسائل العملاء
 @app.route(f"/{API_TOKEN}", methods=['POST'])
 def getMessage():
     try:
@@ -41,12 +40,12 @@ def getMessage():
 
 @bot.message_handler(commands=['start'])
 def send_welcome(message):
-    # تعريف الأزرار بشكل منفصل ومخصص لضمان فتح النوافذ
     markup = ReplyKeyboardMarkup(resize_keyboard=True, row_width=1)
     
-    btn1 = KeyboardButton(text="🤖 تفعيل Gemini Pro", web_app=WebAppInfo(url="https://hanynew.github.io/mybot/gemini.html"))
-    btn2 = KeyboardButton(text="🎧 تفعيل Spotify Premium", web_app=WebAppInfo(url="https://hanynew.github.io/mybot/spotify.html"))
-    btn3 = KeyboardButton(text="▶️ تفعيل YouTube Premium", web_app=WebAppInfo(url="https://hanynew.github.io/mybot/youtube.html"))
+    # 💡 التغيير السحري هنا: غيرنا كلمة "تفعيل" إلى "طلب" والرموز التعبيرية لكسر عناد تيليجرام
+    btn1 = KeyboardButton(text="✨ طلب Gemini Pro", web_app=WebAppInfo(url="https://hanynew.github.io/mybot/gemini.html"))
+    btn2 = KeyboardButton(text="🎶 طلب Spotify Premium", web_app=WebAppInfo(url="https://hanynew.github.io/mybot/spotify.html"))
+    btn3 = KeyboardButton(text="📺 طلب YouTube Premium", web_app=WebAppInfo(url="https://hanynew.github.io/mybot/youtube.html"))
     
     markup.add(btn1, btn2, btn3)
     bot.send_message(message.chat.id, "أهلاً بك!\nالرجاء اختيار الخدمة المطلوبة من القائمة بالأسفل 👇:", reply_markup=markup)
@@ -57,16 +56,15 @@ def handle_web_app_data(message):
     username = f"@{message.from_user.username}" if message.from_user.username else "بدون معرف"
     
     try:
-        # البيانات القادمة من النافذة بعد تعبئتها
         data = json.loads(message.web_app_data.data)
         service = data.get('service', 'gemini')
         
-        # 1. الرسالة التي تظهر للعميل بعد اختفاء النافذة
+        # إخفاء الكيبورد وإرسال رسالة التأكيد للعميل
         user_reply = "طلبك قيد التنفيذ الرجاء الانتظار ⏳\n\nالادارة والاستفسار: @bdallhshay7"
-        hide_markup = ReplyKeyboardRemove() # لإخفاء الأزرار وإشعار العميل بانتهاء التقديم
+        hide_markup = ReplyKeyboardRemove()
         bot.send_message(chat_id, user_reply, reply_markup=hide_markup)
         
-        # 2. إرسال البيانات لك (الآدمن)
+        # إرسال البيانات إليك كآدمن
         if service == "spotify":
             admin_msg = f"🎧 **طلب تفعيل Spotify**\n👤 العميل: {username}\n🔗 الرابط: `{data.get('link', 'غير متوفر')}`"
         elif service == "youtube":
