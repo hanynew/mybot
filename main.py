@@ -3,27 +3,33 @@ from telebot.types import ReplyKeyboardMarkup, KeyboardButton, WebAppInfo
 import json
 import os
 from flask import Flask, request
+import sys
 
-# تم وضع التوكن الجديد هنا
 API_TOKEN = '8840162276:AAGP0Ypb-n5TW67SMLnL2ROD4mw_a5x2DrY'
 ADMIN_ID = '8227136699'
 RENDER_URL = 'https://mybot-1-d6wr.onrender.com'
 
-bot = telebot.TeleBot(API_TOKEN)
+# إضافة threaded=False لضمان استقرار عمل البوت مع السيرفر
+bot = telebot.TeleBot(API_TOKEN, threaded=False)
 app = Flask(__name__)
 
+# 1. مسار المراقبة: يزوره UptimeRobot كل 5 دقائق ليبقى مستيقظاً (لا يتدخل في الربط أبداً)
 @app.route('/')
 def index():
+    return "السيرفر يعمل بنجاح ومستيقظ!", 200
+
+# 2. مسار الربط: تزوره أنت مرة واحدة فقط لربط البوت
+@app.route('/setup')
+def setup_webhook():
     try:
         bot.remove_webhook()
-        # إضافة إجراء إجباري للربط التلقائي
-        set_url = f"{RENDER_URL}/{API_TOKEN}"
-        bot.set_webhook(url=set_url, drop_pending_updates=True)
-        return "تم ربط البوت بنجاح تام وسيعمل الآن!", 200
+        bot.set_webhook(url=f"{RENDER_URL}/{API_TOKEN}", drop_pending_updates=True)
+        return "تم ربط البوت بتيليجرام بنجاح تام وسيعمل الآن!", 200
     except Exception as e:
-        return f"تم التشغيل بنجاح", 200
+        return f"حدث خطأ أثناء الربط: {e}", 500
 
-@app.route('/' + API_TOKEN, methods=['POST'])
+# 3. مسار الاستقبال: لاستقبال رسائل العملاء من تيليجرام
+@app.route(f"/{API_TOKEN}", methods=['POST'])
 def getMessage():
     try:
         json_string = request.get_data().decode('utf-8')
@@ -31,6 +37,7 @@ def getMessage():
         bot.process_new_updates([update])
         return "OK", 200
     except Exception as e:
+        print(f"Error: {e}", file=sys.stderr)
         return "OK", 200
 
 @bot.message_handler(commands=['start'])
