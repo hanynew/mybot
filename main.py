@@ -4,7 +4,8 @@ import json
 import os
 from flask import Flask, request
 
-API_TOKEN = '8840162276:AAHgHkYCbV3nSyZehDKBHmQrrAVmazRQHo4'
+# تم وضع التوكن الجديد هنا
+API_TOKEN = '8840162276:AAGP0Ypb-n5TW67SMLnL2ROD4mw_a5x2DrY'
 ADMIN_ID = '8227136699'
 RENDER_URL = 'https://mybot-1-d6wr.onrender.com'
 
@@ -15,7 +16,7 @@ app = Flask(__name__)
 def index():
     try:
         bot.remove_webhook()
-        # إضافة إجراء إجباري للربط وتجاوز أي خطأ قديم
+        # إضافة إجراء إجباري للربط التلقائي
         set_url = f"{RENDER_URL}/{API_TOKEN}"
         bot.set_webhook(url=set_url, drop_pending_updates=True)
         return "تم ربط البوت بنجاح تام وسيعمل الآن!", 200
