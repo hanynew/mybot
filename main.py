@@ -1,5 +1,5 @@
 import telebot
-from telebot.types import ReplyKeyboardMarkup, KeyboardButton, WebAppInfo
+from telebot.types import ReplyKeyboardMarkup, KeyboardButton, WebAppInfo, ReplyKeyboardRemove
 import json
 import os
 from flask import Flask, request
@@ -9,26 +9,25 @@ API_TOKEN = '8840162276:AAGP0Ypb-n5TW67SMLnL2ROD4mw_a5x2DrY'
 ADMIN_ID = '8227136699'
 RENDER_URL = 'https://mybot-1-d6wr.onrender.com'
 
-# إضافة threaded=False لضمان استقرار عمل البوت مع السيرفر
 bot = telebot.TeleBot(API_TOKEN, threaded=False)
 app = Flask(__name__)
 
-# 1. مسار المراقبة: يزوره UptimeRobot كل 5 دقائق ليبقى مستيقظاً (لا يتدخل في الربط أبداً)
+# مسار المراقبة لضمان التشغيل 24/7 دون حظر من تيليجرام
 @app.route('/')
 def index():
-    return "السيرفر يعمل بنجاح ومستيقظ!", 200
+    return "السيرفر يعمل بنجاح ومستيقظ 24/7!", 200
 
-# 2. مسار الربط: تزوره أنت مرة واحدة فقط لربط البوت
+# مسار إعداد الربط (تزوره مرة واحدة فقط)
 @app.route('/setup')
 def setup_webhook():
     try:
         bot.remove_webhook()
         bot.set_webhook(url=f"{RENDER_URL}/{API_TOKEN}", drop_pending_updates=True)
-        return "تم ربط البوت بتيليجرام بنجاح تام وسيعمل الآن!", 200
+        return "تم ربط البوت بتيليجرام بنجاح تام!", 200
     except Exception as e:
         return f"حدث خطأ أثناء الربط: {e}", 500
 
-# 3. مسار الاستقبال: لاستقبال رسائل العملاء من تيليجرام
+# مسار استقبال رسائل العملاء
 @app.route(f"/{API_TOKEN}", methods=['POST'])
 def getMessage():
     try:
@@ -42,23 +41,32 @@ def getMessage():
 
 @bot.message_handler(commands=['start'])
 def send_welcome(message):
+    # تعريف الأزرار بشكل منفصل ومخصص لضمان فتح النوافذ
     markup = ReplyKeyboardMarkup(resize_keyboard=True, row_width=1)
-    markup.add(
-        KeyboardButton("🤖 تفعيل Gemini Pro", web_app=WebAppInfo(url="https://hanynew.github.io/mybot/gemini.html")),
-        KeyboardButton("🎧 تفعيل Spotify Premium", web_app=WebAppInfo(url="https://hanynew.github.io/mybot/spotify.html")),
-        KeyboardButton("▶️ تفعيل YouTube Premium", web_app=WebAppInfo(url="https://hanynew.github.io/mybot/youtube.html"))
-    )
+    
+    btn1 = KeyboardButton(text="🤖 تفعيل Gemini Pro", web_app=WebAppInfo(url="https://hanynew.github.io/mybot/gemini.html"))
+    btn2 = KeyboardButton(text="🎧 تفعيل Spotify Premium", web_app=WebAppInfo(url="https://hanynew.github.io/mybot/spotify.html"))
+    btn3 = KeyboardButton(text="▶️ تفعيل YouTube Premium", web_app=WebAppInfo(url="https://hanynew.github.io/mybot/youtube.html"))
+    
+    markup.add(btn1, btn2, btn3)
     bot.send_message(message.chat.id, "أهلاً بك!\nالرجاء اختيار الخدمة المطلوبة من القائمة بالأسفل 👇:", reply_markup=markup)
 
 @bot.message_handler(content_types=['web_app_data'])
 def handle_web_app_data(message):
     chat_id = message.chat.id
     username = f"@{message.from_user.username}" if message.from_user.username else "بدون معرف"
+    
     try:
+        # البيانات القادمة من النافذة بعد تعبئتها
         data = json.loads(message.web_app_data.data)
         service = data.get('service', 'gemini')
-        bot.send_message(chat_id, "طلبك قيد التنفيذ يرجى الانتظار")
         
+        # 1. الرسالة التي تظهر للعميل بعد اختفاء النافذة
+        user_reply = "طلبك قيد التنفيذ الرجاء الانتظار ⏳\n\nالادارة والاستفسار: @bdallhshay7"
+        hide_markup = ReplyKeyboardRemove() # لإخفاء الأزرار وإشعار العميل بانتهاء التقديم
+        bot.send_message(chat_id, user_reply, reply_markup=hide_markup)
+        
+        # 2. إرسال البيانات لك (الآدمن)
         if service == "spotify":
             admin_msg = f"🎧 **طلب تفعيل Spotify**\n👤 العميل: {username}\n🔗 الرابط: `{data.get('link', 'غير متوفر')}`"
         elif service == "youtube":
@@ -68,7 +76,7 @@ def handle_web_app_data(message):
 
         bot.send_message(ADMIN_ID, admin_msg, parse_mode="Markdown")
     except Exception as e:
-        pass
+        bot.send_message(chat_id, "حدث خطأ أثناء معالجة الطلب. يرجى المحاولة لاحقاً.")
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 8080)))
