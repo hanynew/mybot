@@ -6,7 +6,7 @@ from pymongo import MongoClient
 from datetime import datetime, timedelta
 
 # --- الإعدادات الأساسية ---
-# توكن البوت (تأكد أنك أضفت BOT_TOKEN في متغيرات البيئة Environment Variables في منصة Render)
+# توكن البوت
 BOT_TOKEN = os.environ.get('BOT_TOKEN')
 
 # تفعيل تنسيق HTML في رسائل البوت
@@ -15,7 +15,6 @@ bot = telebot.TeleBot(BOT_TOKEN, parse_mode='HTML')
 app = Flask(__name__)
 
 # --- إعداد قاعدة البيانات MongoDB ---
-# هذا هو الرابط الخاص بك الجاهز والذي تم ربطه بنجاح
 MONGO_URI = "mongodb+srv://hanytgribi_db_user:KA1999KA@cluster0.kez5fjj.mongodb.net/?appName=Cluster0"
 client = MongoClient(MONGO_URI)
 db = client['MyBotDB']
@@ -52,6 +51,11 @@ def callback_query(call):
     user_id = call.from_user.id
     user = users_collection.find_one({"user_id": user_id})
 
+    # حماية من الانهيار: التأكد من أن المستخدم مسجل في قاعدة البيانات
+    if not user:
+        bot.answer_callback_query(call.id, "❌ الرجاء إرسال أمر /start لتسجيل حسابك أولاً.", show_alert=True)
+        return
+
     if call.data == "daily_point":
         now = datetime.now()
         # التحقق مما إذا كان المستخدم قد جمع النقطة خلال 24 ساعة
@@ -87,8 +91,8 @@ def getMessage():
 @app.route('/setup')
 def setup_webhook():
     bot.remove_webhook()
-    # يقوم بجلب رابط Render تلقائياً ويربطه بالبوت
-    webhook_url = request.host_url + BOT_TOKEN
+    # إجبار الرابط على أن يكون HTTPS مضموناً لتيليجرام
+    webhook_url = f"https://{request.host}/{BOT_TOKEN}"
     bot.set_webhook(url=webhook_url)
     return f"✅ تم تشغيل البوت وربطه بنجاح!<br>الرابط المستخدم: {webhook_url}", 200
 
