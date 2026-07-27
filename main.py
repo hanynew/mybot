@@ -4,10 +4,11 @@ import json
 import os
 from flask import Flask, request
 
-# بياناتك الجاهزة
 API_TOKEN = '8840162276:AAEs2AlVqsdRBCaqa5yMLsw_noCb7cv1dn0'
 ADMIN_ID = '8227136699'
-RENDER_URL = 'https://mybot-1-d8ar.onrender.com'
+
+# الرابط الصحيح والدقيق لمشروعك
+RENDER_URL = 'https://mybot-1-d6wr.onrender.com'
 
 bot = telebot.TeleBot(API_TOKEN)
 app = Flask(__name__)
