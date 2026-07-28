@@ -6,12 +6,10 @@ from pymongo import MongoClient
 from datetime import datetime, timedelta
 
 # --- الإعدادات الأساسية ---
-# توكن البوت
-BOT_TOKEN = os.environ.get('BOT_TOKEN')
+# تنظيف التوكن من أي مسافات مخفية (السبب الرئيسي لعدم التجاوب)
+BOT_TOKEN = os.environ.get('BOT_TOKEN', '').strip()
 
-# تفعيل تنسيق HTML في رسائل البوت
 bot = telebot.TeleBot(BOT_TOKEN, parse_mode='HTML')
-
 app = Flask(__name__)
 
 # --- إعداد قاعدة البيانات MongoDB ---
@@ -33,6 +31,8 @@ def send_welcome(message):
     user_id = message.from_user.id
     first_name = message.from_user.first_name
 
+    print(f"✅ تم استلام أمر /start من: {first_name}", flush=True)
+
     # تسجيل المستخدم في قاعدة البيانات إذا كان يتحدث مع البوت لأول مرة
     if not users_collection.find_one({"user_id": user_id}):
         users_collection.insert_one({
@@ -41,6 +41,7 @@ def send_welcome(message):
             "points": 0,
             "last_collected": None
         })
+        print("✅ تم تسجيل مستخدم جديد في قاعدة البيانات!", flush=True)
 
     welcome_text = f"أهلاً بك يا <b>{first_name}</b> في البوت الخاص بنا! 🤖\n\nتفضل باختيار ما تريد من القائمة بالأسفل:"
     bot.send_message(message.chat.id, welcome_text, reply_markup=main_menu())
@@ -51,7 +52,7 @@ def callback_query(call):
     user_id = call.from_user.id
     user = users_collection.find_one({"user_id": user_id})
 
-    # حماية من الانهيار: التأكد من أن المستخدم مسجل في قاعدة البيانات
+    # حماية من الانهيار: التأكد من أن المستخدم مسجل
     if not user:
         bot.answer_callback_query(call.id, "❌ الرجاء إرسال أمر /start لتسجيل حسابك أولاً.", show_alert=True)
         return
@@ -74,6 +75,7 @@ def callback_query(call):
             {"user_id": user_id},
             {"$inc": {"points": 1}, "$set": {"last_collected": now}}
         )
+        print(f"✅ تم إضافة نقطة للمستخدم: {user_id}", flush=True)
         bot.answer_callback_query(call.id, "✅ مبروك! تمت إضافة نقطة إلى رصيدك بنجاح.", show_alert=True)
 
     elif call.data == "my_balance":
@@ -83,17 +85,21 @@ def callback_query(call):
 # --- إعدادات Webhook لسيرفر Render ---
 @app.route('/' + BOT_TOKEN, methods=['POST'])
 def getMessage():
-    json_string = request.get_data().decode('utf-8')
-    update = telebot.types.Update.de_json(json_string)
-    bot.process_new_updates([update])
-    return "!", 200
+    try:
+        json_string = request.get_data().decode('utf-8')
+        update = telebot.types.Update.de_json(json_string)
+        bot.process_new_updates([update])
+        return "!", 200
+    except Exception as e:
+        print(f"❌ خطأ أثناء الاستقبال: {e}", flush=True)
+        return "!", 500
 
 @app.route('/setup')
 def setup_webhook():
     bot.remove_webhook()
-    # إجبار الرابط على أن يكون HTTPS مضموناً لتيليجرام
     webhook_url = f"https://{request.host}/{BOT_TOKEN}"
     bot.set_webhook(url=webhook_url)
+    print(f"✅ تم إعداد Webhook بنجاح: {webhook_url}", flush=True)
     return f"✅ تم تشغيل البوت وربطه بنجاح!<br>الرابط المستخدم: {webhook_url}", 200
 
 @app.route('/')
