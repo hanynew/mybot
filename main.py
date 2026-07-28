@@ -9,6 +9,7 @@ import datetime
 BOT_TOKEN = os.environ.get('BOT_TOKEN', '').strip()
 ADMIN_ID = os.environ.get('ADMIN_ID') 
 
+# إيقاف المسارات الخلفية لضمان الاستجابة الفورية
 bot = telebot.TeleBot(BOT_TOKEN, parse_mode='HTML', threaded=False)
 app = Flask(__name__)
 
@@ -18,7 +19,7 @@ client = MongoClient(MONGO_URI)
 db = client['MyBotDB']
 users_collection = db['users']
 
-# --- نصوص الأزرار (لتسهيل إدارتها ومطابقتها) ---
+# --- نصوص الأزرار ---
 BTN_YT = "📺 يوتيوب بريميوم"
 BTN_SPOTIFY = "🎵 سبوتيفاي بريميوم"
 BTN_GEMINI = "✨ جيميناي"
@@ -31,7 +32,7 @@ BTN_HELP = "❓ المساعدة"
 BTN_GUIDE = "📖 التعليمات"
 BTN_MAIN = "🏠 الرئيسية"
 
-# --- لوحة المفاتيح الرئيسية (UI المحسنة) ---
+# --- لوحة المفاتيح الرئيسية ---
 def main_keyboard():
     markup = ReplyKeyboardMarkup(resize_keyboard=True, row_width=2)
     markup.add(KeyboardButton(BTN_YT), KeyboardButton(BTN_SPOTIFY))
@@ -61,7 +62,7 @@ def send_welcome(message):
             "last_collected_date": None,
             "streak": 0
         })
-        # التحقق من نظام الدعوات (إضافة نقطتين للداعي)
+        # التحقق من نظام الدعوات
         if len(args) > 1 and args[1].isdigit():
             referrer_id = int(args[1])
             if referrer_id != user_id:
@@ -76,6 +77,39 @@ def send_welcome(message):
 
     welcome_text = f"أهلاً بك يا <b>{first_name}</b> في متجرنا الإلكتروني! 🤖✨\n\nتفضل باختيار ما تريد من القائمة التفاعلية بالأسفل 👇"
     bot.send_message(message.chat.id, welcome_text, reply_markup=main_keyboard())
+
+# --- أوامر الإدارة: شحن الرصيد ---
+@bot.message_handler(commands=['addpoints'])
+def add_points(message):
+    # التحقق من أن المرسل هو الأدمن فقط
+    if str(message.from_user.id) == str(ADMIN_ID):
+        try:
+            args = message.text.split()
+            if len(args) == 3:
+                target_user_id = int(args[1])
+                points_to_add = int(args[2])
+                
+                result = users_collection.update_one(
+                    {"user_id": target_user_id},
+                    {"$inc": {"points": points_to_add}}
+                )
+                
+                if result.modified_count > 0:
+                    bot.send_message(message.chat.id, f"✅ تمت إضافة <b>{points_to_add}</b> نقطة بنجاح للمستخدم <code>{target_user_id}</code>.", parse_mode="HTML")
+                    
+                    # إرسال إشعار للعميل
+                    try:
+                        bot.send_message(target_user_id, f"🎉 <b>تم شحن حسابك!</b>\n\nلقد قامت الإدارة بإضافة <b>{points_to_add}</b> نقطة إلى رصيدك.\nاستمتع بخدماتنا! ✨", parse_mode="HTML")
+                    except:
+                        bot.send_message(message.chat.id, "⚠️ تم شحن الرصيد، لكن العميل قام بحظر البوت ولم تصله رسالة الإشعار.")
+                else:
+                    bot.send_message(message.chat.id, "❌ لم يتم العثور على هذا المستخدم.")
+            else:
+                bot.send_message(message.chat.id, "⚠️ <b>الاستخدام الصحيح:</b>\n/addpoints [رقم_العميل] [عدد_النقاط]\n\nمثال:\n<code>/addpoints 123456789 50</code>", parse_mode="HTML")
+        except Exception as e:
+            bot.send_message(message.chat.id, f"❌ حدث خطأ: {e}")
+    else:
+        bot.send_message(message.chat.id, "⛔️ عذراً، هذا الأمر مخصص لإدارة البوت فقط.")
 
 # --- الاستجابة لأزرار القائمة السفلية ---
 @bot.message_handler(func=lambda message: True)
@@ -103,7 +137,7 @@ def handle_text(message):
         if last_date == yesterday_str:
             streak += 1
         else:
-            streak = 1 # تصفير السلسلة وبدء العد من جديد
+            streak = 1
             
         points_to_add = 2 if streak % 7 == 0 else 1
         
@@ -170,7 +204,7 @@ def handle_text(message):
         else:
             bot.send_message(user_id, f"{details}\n\n😔 <b>عذراً، رصيدك غير كافٍ.</b>\nرصيدك الحالي: {points} نقطة.")
 
-    # 8. الأزرار الأخرى
+    # 8. الأزرار المؤقتة (يمكنك تعديل نصوصها لاحقاً)
     elif text in [BTN_MAIN, BTN_HELP, BTN_GUIDE, BTN_DEPOSIT]:
         bot.send_message(user_id, "⏳ سيتم إضافة المحتوى قريباً...")
 
@@ -184,23 +218,19 @@ def handle_web_app_data(message):
 
     user = users_collection.find_one({"user_id": user_id})
     if user and user.get("points", 0) >= 15:
-        # 1. خصم 15 نقطة
+        # خصم النقاط
         users_collection.update_one({"user_id": user_id}, {"$inc": {"points": -15}})
         
-        # 2. إرسال الطلب لحساب الأدمن
+        # إرسال الطلب للأدمن
         if ADMIN_ID:
             admin_msg = f"🔔 <b>طلب جديد استلمناه للتو!</b>\n\n👤 العميل: {user_name} ({username})\n🆔 رقم العميل: <code>{user_id}</code>\n\n📋 <b>البيانات المرسلة:</b>\n{data}"
             try:
                 bot.send_message(ADMIN_ID, admin_msg)
             except Exception as e:
                 print(f"Error sending to admin: {e}", flush=True)
-        else:
-            print("❌ تحذير: المتغير ADMIN_ID غير موجود.", flush=True)
         
-        # 3. رسالة التأكيد للعميل
+        # إخفاء النموذج ورسالة التأكيد
         success_msg = "✅ <b>طلبك قيد التنفيذ، الرجاء الانتظار!</b>\n\n<a href='https://t.me/bdallhshay7'>💬 للتواصل والاستفسار اضغط هنا</a>"
-        
-        # 4. إخفاء رسالة النموذج السابقة
         try:
             bot.delete_message(message.chat.id, message.message_id - 1) 
         except:
@@ -208,7 +238,7 @@ def handle_web_app_data(message):
             
         bot.send_message(user_id, success_msg, reply_markup=main_keyboard())
 
-# --- إعدادات Webhook ---
+# --- إعدادات Webhook لسيرفر Render ---
 @app.route('/' + BOT_TOKEN, methods=['POST'])
 def getMessage():
     try:
