@@ -18,7 +18,6 @@ client = MongoClient(MONGO_URI)
 db = client['MyBotDB']
 users_collection = db['users']
 
-# قاموس لتتبع حالة الأدمن أثناء الرد على العملاء
 admin_states = {}
 
 # --- نصوص الأزرار ---
@@ -123,7 +122,6 @@ def handle_text(message):
     user_id = message.from_user.id
     text = message.text
 
-    # التحقق مما إذا كان الأدمن في وضع "الرد على العميل"
     if user_id in admin_states and admin_states[user_id].get('action') == 'replying':
         if text == '/cancel':
             del admin_states[user_id]
@@ -137,7 +135,7 @@ def handle_text(message):
         except:
             bot.send_message(user_id, "❌ فشل الإرسال، يبدو أن العميل قام بإيقاف البوت.")
         
-        del admin_states[user_id] # إنهاء وضع الرد بعد الإرسال
+        del admin_states[user_id]
         return
 
     user = users_collection.find_one({"user_id": user_id})
@@ -184,7 +182,7 @@ def handle_text(message):
         points = user.get("points", 0)
         if points >= 15:
             markup = InlineKeyboardMarkup()
-            markup.add(InlineKeyboardButton("📝 فتح النموذج للطلب", web_app=WebAppInfo(url="https://mybot-1-d6wr.onrender.com/youtube.html")))
+            markup.add(InlineKeyboardButton("📝 فتح النموذج للطلب", web_app=WebAppInfo(url=f"https://mybot-1-d6wr.onrender.com/youtube.html?uid={user_id}&pts={points}")))
             bot.send_message(user_id, "📺 <b>يوتيوب بريميوم</b>\nاستمتع بمشاهدة بدون إعلانات.\n\n💎 <b>التكلفة:</b> 15 نقطة.", reply_markup=markup)
         else:
             bot.send_message(user_id, f"📺 <b>يوتيوب بريميوم</b>\n\n😔 <b>عذراً، رصيدك غير كافٍ.</b>\nرصيدك: {points} نقطة.")
@@ -193,7 +191,7 @@ def handle_text(message):
         points = user.get("points", 0)
         if points >= 15:
             markup = InlineKeyboardMarkup()
-            markup.add(InlineKeyboardButton("📝 فتح النموذج للطلب", web_app=WebAppInfo(url="https://mybot-1-d6wr.onrender.com/spotify.html")))
+            markup.add(InlineKeyboardButton("📝 فتح النموذج للطلب", web_app=WebAppInfo(url=f"https://mybot-1-d6wr.onrender.com/spotify.html?uid={user_id}&pts={points}")))
             bot.send_message(user_id, "🎵 <b>سبوتيفاي بريميوم</b>\nاستمع للموسيقى بأعلى جودة.\n\n💎 <b>التكلفة:</b> 15 نقطة.", reply_markup=markup)
         else:
             bot.send_message(user_id, f"🎵 <b>سبوتيفاي بريميوم</b>\n\n😔 <b>عذراً، رصيدك غير كافٍ.</b>\nرصيدك: {points} نقطة.")
@@ -202,7 +200,7 @@ def handle_text(message):
         points = user.get("points", 0)
         if points >= 15:
             markup = InlineKeyboardMarkup()
-            markup.add(InlineKeyboardButton("📝 فتح النموذج للطلب", web_app=WebAppInfo(url="https://mybot-1-d6wr.onrender.com/gemini.html")))
+            markup.add(InlineKeyboardButton("📝 فتح النموذج للطلب", web_app=WebAppInfo(url=f"https://mybot-1-d6wr.onrender.com/gemini.html?uid={user_id}&pts={points}")))
             bot.send_message(user_id, "✨ <b>جيميناي برو</b>\nالذكاء الاصطناعي الأقوى.\n\n💎 <b>التكلفة:</b> 15 نقطة.", reply_markup=markup)
         else:
             bot.send_message(user_id, f"✨ <b>جيميناي برو</b>\n\n😔 <b>عذراً، رصيدك غير كافٍ.</b>\nرصيدك: {points} نقطة.")
@@ -220,8 +218,9 @@ def handle_web_app_data(message):
 
     user = users_collection.find_one({"user_id": user_id})
     if user and user.get("points", 0) >= 15:
-        # خصم النقاط تلقائياً
+        # خصم النقاط وتحديث قاعدة البيانات
         users_collection.update_one({"user_id": user_id}, {"$inc": {"points": -15}})
+        new_points = user.get("points", 0) - 15
         
         # إرسال الطلب للأدمن مع زر الرد المباشر
         if ADMIN_ID:
@@ -239,7 +238,7 @@ def handle_web_app_data(message):
         except:
             pass
             
-        success_msg = "✅ <b>طلبك قيد التنفيذ، الرجاء الانتظار!</b>\n\n<a href='https://t.me/bdallhshay7'>💬 للتواصل والاستفسار اضغط هنا</a>"
+        success_msg = f"🎉 <b>طلبك قيد التنفيذ، الرجاء الانتظار!</b>\n\n⭐ <b>رصيدك المتبقي:</b> {new_points} نقطة.\n\n<a href='https://t.me/bdallhshay7'>💬 للتواصل والاستفسار اضغط هنا</a>"
         bot.send_message(user_id, success_msg, reply_markup=main_keyboard())
 
 
@@ -280,7 +279,6 @@ def youtube_form():
                 let link = document.getElementById('link').value;
                 if(!link) { alert("⚠️ الرجاء إدخال الرابط أولاً!"); return; }
                 tg.sendData("الخدمة: يوتيوب بريميوم \\nالرابط: " + link);
-                tg.close(); // الإغلاق التلقائي
             }
         </script>
     </body>
@@ -320,7 +318,6 @@ def spotify_form():
                 let link = document.getElementById('link').value;
                 if(!link) { alert("⚠️ الرجاء إدخال الرابط أولاً!"); return; }
                 tg.sendData("الخدمة: سبوتيفاي بريميوم \\nالرابط: " + link);
-                tg.close(); // الإغلاق التلقائي
             }
         </script>
     </body>
@@ -357,9 +354,9 @@ def gemini_form():
     </head>
     <body>
         <div class="header">
-            <h2>أتمتة البكسل</h2>
-            <p>لتفعيل Google One املأ معلومات</p>
-            <div class="badge">🕒 عملة | $251.00</div>
+            <h2>أتمتة الباقات</h2>
+            <p>لتفعيل Google One - Gemini Pro املأ المعلومات</p>
+            <div class="badge">⭐ <span id="userPoints">0</span></div>
         </div>
         <div class="form-container">
             <div class="section-title">👤 حساب جوجل</div>
@@ -399,6 +396,13 @@ def gemini_form():
             let tg = window.Telegram.WebApp;
             tg.expand();
             
+            // استخراج النقاط من الرابط وعرضها
+            const urlParams = new URLSearchParams(window.location.search);
+            const points = urlParams.get('pts');
+            if(points) {
+                document.getElementById('userPoints').innerText = points;
+            }
+            
             function togglePwd() {
                 let pwd = document.getElementById("password");
                 if(pwd.type === "password") { pwd.type = "text"; } else { pwd.type = "password"; }
@@ -419,7 +423,6 @@ def gemini_form():
                                  "رموز الاحتياط: " + backup;
                 
                 tg.sendData(dataString);
-                tg.close(); // الإغلاق التلقائي للنافذة
             }
         </script>
     </body>
