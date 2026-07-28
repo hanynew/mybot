@@ -6,10 +6,10 @@ from pymongo import MongoClient
 from datetime import datetime, timedelta
 
 # --- الإعدادات الأساسية ---
-# تنظيف التوكن من أي مسافات مخفية (السبب الرئيسي لعدم التجاوب)
 BOT_TOKEN = os.environ.get('BOT_TOKEN', '').strip()
 
-bot = telebot.TeleBot(BOT_TOKEN, parse_mode='HTML')
+# السر هنا: إيقاف المسارات الخلفية (threaded=False) لإجبار السيرفر على الانتظار والرد
+bot = telebot.TeleBot(BOT_TOKEN, parse_mode='HTML', threaded=False)
 app = Flask(__name__)
 
 # --- إعداد قاعدة البيانات MongoDB ---
@@ -87,6 +87,7 @@ def callback_query(call):
 def getMessage():
     try:
         json_string = request.get_data().decode('utf-8')
+        print(f"📥 تحديث جديد استلمه السيرفر: {json_string}", flush=True)
         update = telebot.types.Update.de_json(json_string)
         bot.process_new_updates([update])
         return "!", 200
