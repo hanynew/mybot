@@ -9,7 +9,6 @@ import datetime
 BOT_TOKEN = os.environ.get('BOT_TOKEN', '').strip()
 ADMIN_ID = os.environ.get('ADMIN_ID') 
 
-# إيقاف المسارات الخلفية لضمان الاستجابة الفورية
 bot = telebot.TeleBot(BOT_TOKEN, parse_mode='HTML', threaded=False)
 app = Flask(__name__)
 
@@ -43,7 +42,7 @@ def main_keyboard():
     markup.add(KeyboardButton(BTN_MAIN))
     return markup
 
-# --- رسالة الترحيب ونظام الدعوات العميق ---
+# --- رسالة الترحيب ---
 @bot.message_handler(commands=['start'])
 def send_welcome(message):
     user_id = message.from_user.id
@@ -52,7 +51,6 @@ def send_welcome(message):
     
     user = users_collection.find_one({"user_id": user_id})
 
-    # تسجيل مستخدم جديد
     if not user:
         users_collection.insert_one({
             "user_id": user_id,
@@ -62,7 +60,6 @@ def send_welcome(message):
             "last_collected_date": None,
             "streak": 0
         })
-        # التحقق من نظام الدعوات
         if len(args) > 1 and args[1].isdigit():
             referrer_id = int(args[1])
             if referrer_id != user_id:
@@ -78,10 +75,9 @@ def send_welcome(message):
     welcome_text = f"أهلاً بك يا <b>{first_name}</b> في متجرنا الإلكتروني! 🤖✨\n\nتفضل باختيار ما تريد من القائمة التفاعلية بالأسفل 👇"
     bot.send_message(message.chat.id, welcome_text, reply_markup=main_keyboard())
 
-# --- أوامر الإدارة: شحن الرصيد ---
+# --- أمر الإدارة (شحن الرصيد) ---
 @bot.message_handler(commands=['addpoints'])
 def add_points(message):
-    # التحقق من أن المرسل هو الأدمن فقط
     if str(message.from_user.id) == str(ADMIN_ID):
         try:
             args = message.text.split()
@@ -96,22 +92,20 @@ def add_points(message):
                 
                 if result.modified_count > 0:
                     bot.send_message(message.chat.id, f"✅ تمت إضافة <b>{points_to_add}</b> نقطة بنجاح للمستخدم <code>{target_user_id}</code>.", parse_mode="HTML")
-                    
-                    # إرسال إشعار للعميل
                     try:
                         bot.send_message(target_user_id, f"🎉 <b>تم شحن حسابك!</b>\n\nلقد قامت الإدارة بإضافة <b>{points_to_add}</b> نقطة إلى رصيدك.\nاستمتع بخدماتنا! ✨", parse_mode="HTML")
                     except:
-                        bot.send_message(message.chat.id, "⚠️ تم شحن الرصيد، لكن العميل قام بحظر البوت ولم تصله رسالة الإشعار.")
+                        pass
                 else:
                     bot.send_message(message.chat.id, "❌ لم يتم العثور على هذا المستخدم.")
             else:
-                bot.send_message(message.chat.id, "⚠️ <b>الاستخدام الصحيح:</b>\n/addpoints [رقم_العميل] [عدد_النقاط]\n\nمثال:\n<code>/addpoints 123456789 50</code>", parse_mode="HTML")
+                bot.send_message(message.chat.id, "⚠️ الاستخدام: /addpoints [رقم_العميل] [النقاط]")
         except Exception as e:
             bot.send_message(message.chat.id, f"❌ حدث خطأ: {e}")
     else:
-        bot.send_message(message.chat.id, "⛔️ عذراً، هذا الأمر مخصص لإدارة البوت فقط.")
+        bot.send_message(message.chat.id, "⛔️ عذراً، هذا الأمر للإدارة فقط.")
 
-# --- الاستجابة لأزرار القائمة السفلية ---
+# --- التفاعل مع الأزرار ---
 @bot.message_handler(func=lambda message: True)
 def handle_text(message):
     user_id = message.from_user.id
@@ -122,7 +116,6 @@ def handle_text(message):
         bot.send_message(user_id, "⚠️ الرجاء إرسال أمر /start أولاً لتسجيل حسابك.")
         return
 
-    # 1. نظام الهدية اليومية
     if text == BTN_DAILY:
         today_str = datetime.datetime.now().strftime("%Y-%m-%d")
         yesterday_str = (datetime.datetime.now() - datetime.timedelta(days=1)).strftime("%Y-%m-%d")
@@ -133,82 +126,61 @@ def handle_text(message):
         if last_date == today_str:
             bot.send_message(user_id, "⏳ لقد قمت بجمع هديتك اليوم! ننتظرك غداً بشوق.")
             return
-        
         if last_date == yesterday_str:
             streak += 1
         else:
             streak = 1
             
         points_to_add = 2 if streak % 7 == 0 else 1
-        
-        users_collection.update_one(
-            {"user_id": user_id},
-            {"$inc": {"points": points_to_add}, "$set": {"last_collected_date": today_str, "streak": streak}}
-        )
-        
-        msg = f"🎉 مبارك! تمت إضافة <b>{points_to_add}</b> نقطة إلى رصيدك!\n🔥 سلسلة الدخول: {streak} أيام متتالية."
-        bot.send_message(user_id, msg)
+        users_collection.update_one({"user_id": user_id}, {"$inc": {"points": points_to_add}, "$set": {"last_collected_date": today_str, "streak": streak}})
+        bot.send_message(user_id, f"🎉 مبارك! تمت إضافة <b>{points_to_add}</b> نقطة إلى رصيدك!\n🔥 سلسلة الدخول: {streak} أيام متتالية.")
 
-    # 2. حسابي
     elif text == BTN_ACCOUNT:
         points = user.get("points", 0)
         invites = user.get("invites", 0)
         name = user.get("first_name", "غير معروف")
-        info = (f"👤 <b>الاسم:</b> {name}\n"
-                f"🆔 <b>رقم الحساب (ID):</b> <code>{user_id}</code>\n"
-                f"⭐ <b>الرصيد:</b> {points} نقطة\n"
-                f"🤝 <b>عدد المدعوين:</b> {invites}")
+        info = (f"👤 <b>الاسم:</b> {name}\n🆔 <b>رقم الحساب:</b> <code>{user_id}</code>\n⭐ <b>الرصيد:</b> {points} نقطة\n🤝 <b>المدعوين:</b> {invites}")
         bot.send_message(user_id, info)
 
-    # 3. دعوة الأصدقاء
     elif text == BTN_INVITE:
         bot_info = bot.get_me()
         invite_link = f"https://t.me/{bot_info.username}?start={user_id}"
-        msg = f"🎁 <b>دعوة الأصدقاء</b>\n\nشارك هذا الرابط مع أصدقائك، وستحصل على نقطتين (2) عن كل شخص يسجل من خلالك:\n\n{invite_link}"
-        bot.send_message(user_id, msg)
+        bot.send_message(user_id, f"🎁 <b>دعوة الأصدقاء</b>\n\nشارك الرابط واحصل على (2) نقطتين عن كل تسجيل:\n\n{invite_link}")
 
-    # 4. تواصل مع الإدارة
     elif text == BTN_CONTACT:
-        bot.send_message(user_id, "💬 للتواصل المباشر مع الإدارة لشحن رصيدك أو لأي استفسار:\n\n<a href='https://t.me/bdallhshay7'>اضغط هنا للتواصل مع الدعم</a>", parse_mode="HTML")
+        bot.send_message(user_id, "💬 للتواصل المباشر مع الإدارة:\n\n<a href='https://t.me/bdallhshay7'>اضغط هنا للتواصل مع الدعم</a>", parse_mode="HTML")
 
-    # 5. يوتيوب بريميوم
     elif text == BTN_YT:
         points = user.get("points", 0)
-        details = "📺 <b>يوتيوب بريميوم</b>\nاستمتع بمشاهدة الفيديوهات بدون إعلانات مع تشغيل في الخلفية والتنزيل المباشر.\n\n💎 <b>التكلفة:</b> 15 نقطة."
         if points >= 15:
             markup = InlineKeyboardMarkup()
             markup.add(InlineKeyboardButton("📝 فتح النموذج للطلب", web_app=WebAppInfo(url="https://mybot-1-d6wr.onrender.com/youtube.html")))
-            bot.send_message(user_id, details, reply_markup=markup)
+            bot.send_message(user_id, "📺 <b>يوتيوب بريميوم</b>\nاستمتع بمشاهدة بدون إعلانات.\n\n💎 <b>التكلفة:</b> 15 نقطة.", reply_markup=markup)
         else:
-            bot.send_message(user_id, f"{details}\n\n😔 <b>عذراً، رصيدك غير كافٍ.</b>\nرصيدك الحالي: {points} نقطة.")
+            bot.send_message(user_id, f"📺 <b>يوتيوب بريميوم</b>\n\n😔 <b>عذراً، رصيدك غير كافٍ.</b>\nرصيدك: {points} نقطة.")
 
-    # 6. سبوتيفاي بريميوم
     elif text == BTN_SPOTIFY:
         points = user.get("points", 0)
-        details = "🎵 <b>سبوتيفاي بريميوم</b>\nاستمع للموسيقى بدون إعلانات وبأعلى جودة مع إمكانية التحميل.\n\n💎 <b>التكلفة:</b> 15 نقطة."
         if points >= 15:
             markup = InlineKeyboardMarkup()
             markup.add(InlineKeyboardButton("📝 فتح النموذج للطلب", web_app=WebAppInfo(url="https://mybot-1-d6wr.onrender.com/spotify.html")))
-            bot.send_message(user_id, details, reply_markup=markup)
+            bot.send_message(user_id, "🎵 <b>سبوتيفاي بريميوم</b>\nاستمع للموسيقى بأعلى جودة.\n\n💎 <b>التكلفة:</b> 15 نقطة.", reply_markup=markup)
         else:
-            bot.send_message(user_id, f"{details}\n\n😔 <b>عذراً، رصيدك غير كافٍ.</b>\nرصيدك الحالي: {points} نقطة.")
+            bot.send_message(user_id, f"🎵 <b>سبوتيفاي بريميوم</b>\n\n😔 <b>عذراً، رصيدك غير كافٍ.</b>\nرصيدك: {points} نقطة.")
 
-    # 7. جيميناي
     elif text == BTN_GEMINI:
         points = user.get("points", 0)
-        details = "✨ <b>جيميناي برو</b>\nاحصل على اشتراك الذكاء الاصطناعي الأقوى لتسهيل مهامك اليومية.\n\n💎 <b>التكلفة:</b> 15 نقطة."
         if points >= 15:
             markup = InlineKeyboardMarkup()
             markup.add(InlineKeyboardButton("📝 فتح النموذج للطلب", web_app=WebAppInfo(url="https://mybot-1-d6wr.onrender.com/gemini.html")))
-            bot.send_message(user_id, details, reply_markup=markup)
+            bot.send_message(user_id, "✨ <b>جيميناي برو</b>\nالذكاء الاصطناعي الأقوى.\n\n💎 <b>التكلفة:</b> 15 نقطة.", reply_markup=markup)
         else:
-            bot.send_message(user_id, f"{details}\n\n😔 <b>عذراً، رصيدك غير كافٍ.</b>\nرصيدك الحالي: {points} نقطة.")
+            bot.send_message(user_id, f"✨ <b>جيميناي برو</b>\n\n😔 <b>عذراً، رصيدك غير كافٍ.</b>\nرصيدك: {points} نقطة.")
 
-    # 8. الأزرار المؤقتة (يمكنك تعديل نصوصها لاحقاً)
     elif text in [BTN_MAIN, BTN_HELP, BTN_GUIDE, BTN_DEPOSIT]:
         bot.send_message(user_id, "⏳ سيتم إضافة المحتوى قريباً...")
 
-# --- استقبال بيانات النماذج (التوجيه والخصم) ---
+# --- استقبال البيانات من النماذج ---
 @bot.message_handler(content_types=['web_app_data'])
 def handle_web_app_data(message):
     user_id = message.from_user.id
@@ -218,18 +190,15 @@ def handle_web_app_data(message):
 
     user = users_collection.find_one({"user_id": user_id})
     if user and user.get("points", 0) >= 15:
-        # خصم النقاط
         users_collection.update_one({"user_id": user_id}, {"$inc": {"points": -15}})
         
-        # إرسال الطلب للأدمن
         if ADMIN_ID:
             admin_msg = f"🔔 <b>طلب جديد استلمناه للتو!</b>\n\n👤 العميل: {user_name} ({username})\n🆔 رقم العميل: <code>{user_id}</code>\n\n📋 <b>البيانات المرسلة:</b>\n{data}"
             try:
                 bot.send_message(ADMIN_ID, admin_msg)
-            except Exception as e:
-                print(f"Error sending to admin: {e}", flush=True)
+            except:
+                pass
         
-        # إخفاء النموذج ورسالة التأكيد
         success_msg = "✅ <b>طلبك قيد التنفيذ، الرجاء الانتظار!</b>\n\n<a href='https://t.me/bdallhshay7'>💬 للتواصل والاستفسار اضغط هنا</a>"
         try:
             bot.delete_message(message.chat.id, message.message_id - 1) 
@@ -237,6 +206,111 @@ def handle_web_app_data(message):
             pass
             
         bot.send_message(user_id, success_msg, reply_markup=main_keyboard())
+
+
+# ==========================================
+# --- أكواد ونماذج HTML المدمجة (الواجهات) ---
+# ==========================================
+
+@app.route('/youtube.html')
+def youtube_form():
+    return '''
+    <!DOCTYPE html>
+    <html dir="rtl">
+    <head>
+        <meta charset="utf-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1.0">
+        <script src="https://telegram.org/js/telegram-web-app.js"></script>
+        <style>
+            body { font-family: Arial, sans-serif; padding: 20px; text-align: center; background-color: #f9f9f9; color: #333;}
+            input { width: 90%; padding: 12px; margin: 20px 0; border: 1px solid #ccc; border-radius: 8px; font-size: 16px;}
+            button { background-color: #FF0000; color: white; border: none; padding: 12px 20px; border-radius: 8px; font-size: 16px; cursor: pointer; width: 90%; font-weight: bold;}
+        </style>
+    </head>
+    <body>
+        <h2>📺 يوتيوب بريميوم</h2>
+        <p>يرجى كتابة الإيميل المراد تفعيل الاشتراك عليه:</p>
+        <input type="email" id="email" placeholder="example@gmail.com" required>
+        <button onclick="sendData()">تأكيد وطلب التفعيل</button>
+        <script>
+            let tg = window.Telegram.WebApp;
+            tg.expand();
+            function sendData() {
+                let email = document.getElementById('email').value;
+                if(!email) { alert("⚠️ الرجاء إدخال الإيميل أولاً!"); return; }
+                tg.sendData("الخدمة: يوتيوب بريميوم \\nالإيميل: " + email);
+            }
+        </script>
+    </body>
+    </html>
+    ''', 200
+
+@app.route('/spotify.html')
+def spotify_form():
+    return '''
+    <!DOCTYPE html>
+    <html dir="rtl">
+    <head>
+        <meta charset="utf-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1.0">
+        <script src="https://telegram.org/js/telegram-web-app.js"></script>
+        <style>
+            body { font-family: Arial, sans-serif; padding: 20px; text-align: center; background-color: #f9f9f9; color: #333;}
+            input { width: 90%; padding: 12px; margin: 20px 0; border: 1px solid #ccc; border-radius: 8px; font-size: 16px;}
+            button { background-color: #1DB954; color: white; border: none; padding: 12px 20px; border-radius: 8px; font-size: 16px; cursor: pointer; width: 90%; font-weight: bold;}
+        </style>
+    </head>
+    <body>
+        <h2>🎵 سبوتيفاي بريميوم</h2>
+        <p>يرجى كتابة الإيميل المراد تفعيل الاشتراك عليه:</p>
+        <input type="email" id="email" placeholder="example@gmail.com" required>
+        <button onclick="sendData()">تأكيد وطلب التفعيل</button>
+        <script>
+            let tg = window.Telegram.WebApp;
+            tg.expand();
+            function sendData() {
+                let email = document.getElementById('email').value;
+                if(!email) { alert("⚠️ الرجاء إدخال الإيميل أولاً!"); return; }
+                tg.sendData("الخدمة: سبوتيفاي بريميوم \\nالإيميل: " + email);
+            }
+        </script>
+    </body>
+    </html>
+    ''', 200
+
+@app.route('/gemini.html')
+def gemini_form():
+    return '''
+    <!DOCTYPE html>
+    <html dir="rtl">
+    <head>
+        <meta charset="utf-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1.0">
+        <script src="https://telegram.org/js/telegram-web-app.js"></script>
+        <style>
+            body { font-family: Arial, sans-serif; padding: 20px; text-align: center; background-color: #f9f9f9; color: #333;}
+            input { width: 90%; padding: 12px; margin: 20px 0; border: 1px solid #ccc; border-radius: 8px; font-size: 16px;}
+            button { background-color: #1a73e8; color: white; border: none; padding: 12px 20px; border-radius: 8px; font-size: 16px; cursor: pointer; width: 90%; font-weight: bold;}
+        </style>
+    </head>
+    <body>
+        <h2>✨ جيميناي برو</h2>
+        <p>يرجى كتابة الإيميل المراد تفعيل الاشتراك عليه:</p>
+        <input type="email" id="email" placeholder="example@gmail.com" required>
+        <button onclick="sendData()">تأكيد وطلب التفعيل</button>
+        <script>
+            let tg = window.Telegram.WebApp;
+            tg.expand();
+            function sendData() {
+                let email = document.getElementById('email').value;
+                if(!email) { alert("⚠️ الرجاء إدخال الإيميل أولاً!"); return; }
+                tg.sendData("الخدمة: جيميناي برو \\nالإيميل: " + email);
+            }
+        </script>
+    </body>
+    </html>
+    ''', 200
+
 
 # --- إعدادات Webhook لسيرفر Render ---
 @app.route('/' + BOT_TOKEN, methods=['POST'])
@@ -246,8 +320,7 @@ def getMessage():
         update = telebot.types.Update.de_json(json_string)
         bot.process_new_updates([update])
         return "!", 200
-    except Exception as e:
-        print(f"Error: {e}", flush=True)
+    except:
         return "!", 500
 
 @app.route('/setup')
