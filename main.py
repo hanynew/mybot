@@ -7,7 +7,7 @@ import datetime
 
 # --- الإعدادات الأساسية ---
 BOT_TOKEN = os.environ.get('BOT_TOKEN', '').strip()
-ADMIN_ID = os.environ.get('ADMIN_ID') # يقوم بسحب رقمك التعريفي من منصة ريندر
+ADMIN_ID = os.environ.get('ADMIN_ID') 
 
 bot = telebot.TeleBot(BOT_TOKEN, parse_mode='HTML', threaded=False)
 app = Flask(__name__)
@@ -18,15 +18,28 @@ client = MongoClient(MONGO_URI)
 db = client['MyBotDB']
 users_collection = db['users']
 
-# --- لوحة المفاتيح الرئيسية (UI الجديدة) ---
+# --- نصوص الأزرار (لتسهيل إدارتها ومطابقتها) ---
+BTN_YT = "📺 يوتيوب بريميوم"
+BTN_SPOTIFY = "🎵 سبوتيفاي بريميوم"
+BTN_GEMINI = "✨ جيميناي"
+BTN_DAILY = "🎁 الهدية اليومية"
+BTN_DEPOSIT = "💳 شحن البوت عن طريق الإيداع"
+BTN_CONTACT = "💬 تواصل مع الإدارة"
+BTN_ACCOUNT = "👤 حسابي"
+BTN_INVITE = "🤝 دعوة الأصدقاء"
+BTN_HELP = "❓ المساعدة"
+BTN_GUIDE = "📖 التعليمات"
+BTN_MAIN = "🏠 الرئيسية"
+
+# --- لوحة المفاتيح الرئيسية (UI المحسنة) ---
 def main_keyboard():
     markup = ReplyKeyboardMarkup(resize_keyboard=True, row_width=2)
-    markup.add(KeyboardButton("يوتيوب بريميوم"), KeyboardButton("سبوتيفاي بريميوم"))
-    markup.add(KeyboardButton("جيميناي"), KeyboardButton("الهدية اليومية"))
-    markup.add(KeyboardButton("شحن البوت عن طريق الإيداع"), KeyboardButton("تواصل مع الإدارة لشحن البوت"))
-    markup.add(KeyboardButton("حسابي"), KeyboardButton("دعوة الأصدقاء"))
-    markup.add(KeyboardButton("المساعدة"), KeyboardButton("التعليمات"))
-    markup.add(KeyboardButton("الرئيسية"))
+    markup.add(KeyboardButton(BTN_YT), KeyboardButton(BTN_SPOTIFY))
+    markup.add(KeyboardButton(BTN_GEMINI), KeyboardButton(BTN_DAILY))
+    markup.add(KeyboardButton(BTN_DEPOSIT), KeyboardButton(BTN_CONTACT))
+    markup.add(KeyboardButton(BTN_ACCOUNT), KeyboardButton(BTN_INVITE))
+    markup.add(KeyboardButton(BTN_HELP), KeyboardButton(BTN_GUIDE))
+    markup.add(KeyboardButton(BTN_MAIN))
     return markup
 
 # --- رسالة الترحيب ونظام الدعوات العميق ---
@@ -57,11 +70,11 @@ def send_welcome(message):
                     {"$inc": {"points": 2, "invites": 1}}
                 )
                 try:
-                    bot.send_message(referrer_id, "🎉 قام صديق بالتسجيل عبر رابطك! تمت إضافة نقطتين (2) لرصيدك.")
+                    bot.send_message(referrer_id, "🎉 ياي! قام صديق بالتسجيل عبر رابطك! تمت إضافة (2) نقطتين لرصيدك بنجاح.")
                 except:
                     pass
 
-    welcome_text = f"أهلاً بك يا <b>{first_name}</b> في متجرنا الإلكتروني! 🤖\n\nتفضل باختيار ما تريد من القائمة بالأسفل:"
+    welcome_text = f"أهلاً بك يا <b>{first_name}</b> في متجرنا الإلكتروني! 🤖✨\n\nتفضل باختيار ما تريد من القائمة التفاعلية بالأسفل 👇"
     bot.send_message(message.chat.id, welcome_text, reply_markup=main_keyboard())
 
 # --- الاستجابة لأزرار القائمة السفلية ---
@@ -72,11 +85,11 @@ def handle_text(message):
     user = users_collection.find_one({"user_id": user_id})
 
     if not user:
-        bot.send_message(user_id, "❌ الرجاء إرسال أمر /start أولاً لتسجيل حسابك.")
+        bot.send_message(user_id, "⚠️ الرجاء إرسال أمر /start أولاً لتسجيل حسابك.")
         return
 
-    # 1. نظام الهدية اليومية (السلسلة التقويمية)
-    if text == "الهدية اليومية":
+    # 1. نظام الهدية اليومية
+    if text == BTN_DAILY:
         today_str = datetime.datetime.now().strftime("%Y-%m-%d")
         yesterday_str = (datetime.datetime.now() - datetime.timedelta(days=1)).strftime("%Y-%m-%d")
         
@@ -84,7 +97,7 @@ def handle_text(message):
         streak = user.get("streak", 0)
 
         if last_date == today_str:
-            bot.send_message(user_id, "❌ لقد قمت بجمع هديتك اليوم! عد غداً.")
+            bot.send_message(user_id, "⏳ لقد قمت بجمع هديتك اليوم! ننتظرك غداً بشوق.")
             return
         
         if last_date == yesterday_str:
@@ -99,64 +112,67 @@ def handle_text(message):
             {"$inc": {"points": points_to_add}, "$set": {"last_collected_date": today_str, "streak": streak}}
         )
         
-        msg = f"✅ تمت إضافة <b>{points_to_add}</b> نقطة إلى رصيدك!\n🔥 سلسلة الدخول: {streak} أيام متتالية."
+        msg = f"🎉 مبارك! تمت إضافة <b>{points_to_add}</b> نقطة إلى رصيدك!\n🔥 سلسلة الدخول: {streak} أيام متتالية."
         bot.send_message(user_id, msg)
 
     # 2. حسابي
-    elif text == "حسابي":
+    elif text == BTN_ACCOUNT:
         points = user.get("points", 0)
         invites = user.get("invites", 0)
         name = user.get("first_name", "غير معروف")
-        info = f"👤 <b>الاسم:</b> {name}\n⭐ <b>الرصيد:</b> {points} نقطة\n🤝 <b>عدد المدعوين:</b> {invites}"
+        info = (f"👤 <b>الاسم:</b> {name}\n"
+                f"🆔 <b>رقم الحساب (ID):</b> <code>{user_id}</code>\n"
+                f"⭐ <b>الرصيد:</b> {points} نقطة\n"
+                f"🤝 <b>عدد المدعوين:</b> {invites}")
         bot.send_message(user_id, info)
 
     # 3. دعوة الأصدقاء
-    elif text == "دعوة الأصدقاء":
+    elif text == BTN_INVITE:
         bot_info = bot.get_me()
         invite_link = f"https://t.me/{bot_info.username}?start={user_id}"
         msg = f"🎁 <b>دعوة الأصدقاء</b>\n\nشارك هذا الرابط مع أصدقائك، وستحصل على نقطتين (2) عن كل شخص يسجل من خلالك:\n\n{invite_link}"
         bot.send_message(user_id, msg)
 
     # 4. تواصل مع الإدارة
-    elif text == "تواصل مع الإدارة لشحن البوت":
-        bot.send_message(user_id, "💬 للتواصل المباشر مع الإدارة لشحن رصيدك:\n\n<a href='https://t.me/bdallhshay7'>اضغط هنا للتواصل مع الدعم</a>", parse_mode="HTML")
+    elif text == BTN_CONTACT:
+        bot.send_message(user_id, "💬 للتواصل المباشر مع الإدارة لشحن رصيدك أو لأي استفسار:\n\n<a href='https://t.me/bdallhshay7'>اضغط هنا للتواصل مع الدعم</a>", parse_mode="HTML")
 
-    # 5. يوتيوب بريميوم (قفل الرصيد)
-    elif text == "يوتيوب بريميوم":
+    # 5. يوتيوب بريميوم
+    elif text == BTN_YT:
         points = user.get("points", 0)
-        details = "📺 <b>يوتيوب بريميوم</b>\nاستمتع بمشاهدة الفيديوهات بدون إعلانات مع تشغيل في الخلفية.\n\nالتكلفة: 15 نقطة."
+        details = "📺 <b>يوتيوب بريميوم</b>\nاستمتع بمشاهدة الفيديوهات بدون إعلانات مع تشغيل في الخلفية والتنزيل المباشر.\n\n💎 <b>التكلفة:</b> 15 نقطة."
         if points >= 15:
             markup = InlineKeyboardMarkup()
             markup.add(InlineKeyboardButton("📝 فتح النموذج للطلب", web_app=WebAppInfo(url="https://mybot-1-d6wr.onrender.com/youtube.html")))
             bot.send_message(user_id, details, reply_markup=markup)
         else:
-            bot.send_message(user_id, f"{details}\n\n❌ <b>رصيدك غير كافٍ.</b> رصيدك الحالي {points} نقطة.")
+            bot.send_message(user_id, f"{details}\n\n😔 <b>عذراً، رصيدك غير كافٍ.</b>\nرصيدك الحالي: {points} نقطة.")
 
     # 6. سبوتيفاي بريميوم
-    elif text == "سبوتيفاي بريميوم":
+    elif text == BTN_SPOTIFY:
         points = user.get("points", 0)
-        details = "🎵 <b>سبوتيفاي بريميوم</b>\nاستمع للموسيقى بدون إعلانات وبأعلى جودة.\n\nالتكلفة: 15 نقطة."
+        details = "🎵 <b>سبوتيفاي بريميوم</b>\nاستمع للموسيقى بدون إعلانات وبأعلى جودة مع إمكانية التحميل.\n\n💎 <b>التكلفة:</b> 15 نقطة."
         if points >= 15:
             markup = InlineKeyboardMarkup()
             markup.add(InlineKeyboardButton("📝 فتح النموذج للطلب", web_app=WebAppInfo(url="https://mybot-1-d6wr.onrender.com/spotify.html")))
             bot.send_message(user_id, details, reply_markup=markup)
         else:
-            bot.send_message(user_id, f"{details}\n\n❌ <b>رصيدك غير كافٍ.</b> رصيدك الحالي {points} نقطة.")
+            bot.send_message(user_id, f"{details}\n\n😔 <b>عذراً، رصيدك غير كافٍ.</b>\nرصيدك الحالي: {points} نقطة.")
 
     # 7. جيميناي
-    elif text == "جيميناي":
+    elif text == BTN_GEMINI:
         points = user.get("points", 0)
-        details = "✨ <b>جيميناي برو</b>\nاحصل على اشتراك الذكاء الاصطناعي الأقوى.\n\nالتكلفة: 15 نقطة."
+        details = "✨ <b>جيميناي برو</b>\nاحصل على اشتراك الذكاء الاصطناعي الأقوى لتسهيل مهامك اليومية.\n\n💎 <b>التكلفة:</b> 15 نقطة."
         if points >= 15:
             markup = InlineKeyboardMarkup()
             markup.add(InlineKeyboardButton("📝 فتح النموذج للطلب", web_app=WebAppInfo(url="https://mybot-1-d6wr.onrender.com/gemini.html")))
             bot.send_message(user_id, details, reply_markup=markup)
         else:
-            bot.send_message(user_id, f"{details}\n\n❌ <b>رصيدك غير كافٍ.</b> رصيدك الحالي {points} نقطة.")
+            bot.send_message(user_id, f"{details}\n\n😔 <b>عذراً، رصيدك غير كافٍ.</b>\nرصيدك الحالي: {points} نقطة.")
 
     # 8. الأزرار الأخرى
-    elif text in ["الرئيسية", "المساعدة", "التعليمات", "شحن البوت عن طريق الإيداع"]:
-        bot.send_message(user_id, "سيتم إضافة المحتوى قريباً...")
+    elif text in [BTN_MAIN, BTN_HELP, BTN_GUIDE, BTN_DEPOSIT]:
+        bot.send_message(user_id, "⏳ سيتم إضافة المحتوى قريباً...")
 
 # --- استقبال بيانات النماذج (التوجيه والخصم) ---
 @bot.message_handler(content_types=['web_app_data'])
@@ -164,7 +180,7 @@ def handle_web_app_data(message):
     user_id = message.from_user.id
     user_name = message.from_user.first_name
     username = f"@{message.from_user.username}" if message.from_user.username else "بدون يوزر"
-    data = message.web_app_data.data # البيانات القادمة من نموذج HTML
+    data = message.web_app_data.data 
 
     user = users_collection.find_one({"user_id": user_id})
     if user and user.get("points", 0) >= 15:
@@ -173,13 +189,16 @@ def handle_web_app_data(message):
         
         # 2. إرسال الطلب لحساب الأدمن
         if ADMIN_ID:
-            admin_msg = f"🔔 <b>طلب جديد!</b>\n\nالعميل: {user_name} ({username})\nرقم العميل: <code>{user_id}</code>\n\nالبيانات المرسلة:\n{data}"
-            bot.send_message(ADMIN_ID, admin_msg)
+            admin_msg = f"🔔 <b>طلب جديد استلمناه للتو!</b>\n\n👤 العميل: {user_name} ({username})\n🆔 رقم العميل: <code>{user_id}</code>\n\n📋 <b>البيانات المرسلة:</b>\n{data}"
+            try:
+                bot.send_message(ADMIN_ID, admin_msg)
+            except Exception as e:
+                print(f"Error sending to admin: {e}", flush=True)
         else:
-            print("❌ تحذير: المتغير ADMIN_ID غير موجود، لم يتم إرسال الطلب للإدارة.", flush=True)
+            print("❌ تحذير: المتغير ADMIN_ID غير موجود.", flush=True)
         
-        # 3. رسالة التأكيد للعميل باللون الأزرق
-        success_msg = "طلبك قيد التنفيذ الرجاء الانتظار\n\n<a href='https://t.me/bdallhshay7'>للتواصل والاستفسار</a>"
+        # 3. رسالة التأكيد للعميل
+        success_msg = "✅ <b>طلبك قيد التنفيذ، الرجاء الانتظار!</b>\n\n<a href='https://t.me/bdallhshay7'>💬 للتواصل والاستفسار اضغط هنا</a>"
         
         # 4. إخفاء رسالة النموذج السابقة
         try:
