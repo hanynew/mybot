@@ -17,10 +17,19 @@ MONGO_URI = "mongodb+srv://hanytgribi_db_user:KA1999KA@cluster0.kez5fjj.mongodb.
 client = MongoClient(MONGO_URI)
 db = client['MyBotDB']
 users_collection = db['users']
+settings_collection = db['settings'] # قاعدة بيانات جديدة للإعدادات المرنة
+
+# --- جلب إعدادات المتجر ---
+def get_settings():
+    s = settings_collection.find_one({"_id": "bot_settings"})
+    if not s:
+        s = {"_id": "bot_settings", "service_price": 15, "referral_bonus": 2}
+        settings_collection.insert_one(s)
+    return s
 
 admin_states = {}
 
-# --- نصوص الأزرار ---
+# --- نصوص أزرار المستخدمين ---
 BTN_YT = "📺 يوتيوب بريميوم"
 BTN_SPOTIFY = "🎵 سبوتيفاي بريميوم"
 BTN_GEMINI = "✨ جيميناي"
@@ -33,7 +42,7 @@ BTN_HELP = "❓ المساعدة"
 BTN_GUIDE = "📖 التعليمات"
 BTN_MAIN = "🏠 الرئيسية"
 
-# --- لوحة المفاتيح الرئيسية ---
+# --- لوحة المفاتيح الرئيسية للعملاء ---
 def main_keyboard():
     markup = ReplyKeyboardMarkup(resize_keyboard=True, row_width=2)
     markup.add(KeyboardButton(BTN_YT), KeyboardButton(BTN_SPOTIFY))
@@ -44,7 +53,25 @@ def main_keyboard():
     markup.add(KeyboardButton(BTN_MAIN))
     return markup
 
-# --- رسالة الترحيب ---
+# --- لوحة تحكم الإدارة (تظهر لك فقط) ---
+def admin_keyboard():
+    markup = ReplyKeyboardMarkup(resize_keyboard=True, row_width=2)
+    markup.add(KeyboardButton("🚫 حظر مستخدم"), KeyboardButton("✅ فك حظر"))
+    markup.add(KeyboardButton("➕ إضافة نقاط"), KeyboardButton("➖ سحب نقاط"))
+    markup.add(KeyboardButton("📩 رد/رسالة لمستخدم"), KeyboardButton("📢 إذاعة للجميع"))
+    markup.add(KeyboardButton("💰 تعديل سعر الخدمات"), KeyboardButton("🎁 تعديل مكافأة الدعوة"))
+    markup.add(KeyboardButton(BTN_MAIN)) # للعودة كعميل
+    return markup
+
+# --- أمر فتح لوحة الإدارة ---
+@bot.message_handler(commands=['admin'])
+def open_admin_panel(message):
+    if str(message.from_user.id) == str(ADMIN_ID):
+        bot.send_message(message.chat.id, "🛠️ <b>مرحباً بك في لوحة تحكم الإدارة:</b>\nاختر الإجراء الذي تريده من الأزرار بالأسفل 👇", reply_markup=admin_keyboard())
+    else:
+        bot.send_message(message.chat.id, "⛔️ عذراً، لا تملك صلاحية الدخول.")
+
+# --- رسالة الترحيب ونظام الدعوات ---
 @bot.message_handler(commands=['start'])
 def send_welcome(message):
     user_id = message.from_user.id
@@ -53,6 +80,10 @@ def send_welcome(message):
     
     user = users_collection.find_one({"user_id": user_id})
 
+    if user and user.get("is_banned", False):
+        bot.send_message(user_id, "⛔️ <b>عذراً، تم حظر حسابك من استخدام هذا البوت.</b>", parse_mode="HTML")
+        return
+
     if not user:
         users_collection.insert_one({
             "user_id": user_id,
@@ -60,89 +91,173 @@ def send_welcome(message):
             "points": 0,
             "invites": 0,
             "last_collected_date": None,
-            "streak": 0
+            "streak": 0,
+            "is_banned": False
         })
         if len(args) > 1 and args[1].isdigit():
             referrer_id = int(args[1])
             if referrer_id != user_id:
+                ref_bonus = get_settings().get("referral_bonus", 2)
                 users_collection.update_one(
                     {"user_id": referrer_id},
-                    {"$inc": {"points": 2, "invites": 1}}
+                    {"$inc": {"points": ref_bonus, "invites": 1}}
                 )
                 try:
-                    bot.send_message(referrer_id, "🎉 ياي! قام صديق بالتسجيل عبر رابطك! تمت إضافة (2) نقطتين لرصيدك بنجاح.")
+                    bot.send_message(referrer_id, f"🎉 ياي! قام صديق بالتسجيل عبر رابطك! تمت إضافة ({ref_bonus}) نقطة لرصيدك بنجاح.")
                 except:
                     pass
 
     welcome_text = f"أهلاً بك يا <b>{first_name}</b> في متجرنا الإلكتروني! 🤖✨\n\nتفضل باختيار ما تريد من القائمة التفاعلية بالأسفل 👇"
     bot.send_message(message.chat.id, welcome_text, reply_markup=main_keyboard())
 
-# --- أمر الإدارة (شحن الرصيد) ---
-@bot.message_handler(commands=['addpoints'])
-def add_points(message):
-    if str(message.from_user.id) == str(ADMIN_ID):
-        try:
-            args = message.text.split()
-            if len(args) == 3:
-                target_user_id = int(args[1])
-                points_to_add = int(args[2])
-                
-                result = users_collection.update_one(
-                    {"user_id": target_user_id},
-                    {"$inc": {"points": points_to_add}}
-                )
-                
-                if result.modified_count > 0:
-                    bot.send_message(message.chat.id, f"✅ تمت إضافة <b>{points_to_add}</b> نقطة بنجاح للمستخدم <code>{target_user_id}</code>.", parse_mode="HTML")
-                    try:
-                        bot.send_message(target_user_id, f"🎉 <b>تم شحن حسابك!</b>\n\nلقد قامت الإدارة بإضافة <b>{points_to_add}</b> نقطة إلى رصيدك.\nاستمتع بخدماتنا! ✨", parse_mode="HTML")
-                    except:
-                        pass
-                else:
-                    bot.send_message(message.chat.id, "❌ لم يتم العثور على هذا المستخدم.")
-            else:
-                bot.send_message(message.chat.id, "⚠️ الاستخدام: /addpoints [رقم_العميل] [النقاط]")
-        except Exception as e:
-            bot.send_message(message.chat.id, f"❌ حدث خطأ: {e}")
-    else:
-        bot.send_message(message.chat.id, "⛔️ عذراً، هذا الأمر للإدارة فقط.")
-
-# --- زر الرد من الأدمن ---
+# --- زر الرد من تحت الطلب مباشرة (كما هو) ---
 @bot.callback_query_handler(func=lambda call: call.data.startswith('reply_'))
 def handle_reply_button(call):
     if str(call.from_user.id) == str(ADMIN_ID):
         target_id = call.data.split('_')[1]
-        admin_states[call.from_user.id] = {'action': 'replying', 'target_user': target_id}
-        bot.send_message(ADMIN_ID, f"✍️ <b>وضع الرد مفعل:</b>\nاكتب رسالتك الآن ليتم إرسالها للعميل صاحب الـ ID: <code>{target_id}</code>\n\n(لإلغاء الرد أرسل /cancel)", parse_mode="HTML")
+        admin_states[call.from_user.id] = {'action': 'reply_user', 'target': target_id}
+        bot.send_message(ADMIN_ID, f"✍️ <b>وضع الرد مفعل:</b>\nاكتب رسالتك الآن للعميل: <code>{target_id}</code>\n\n(لإلغاء الأمر أرسل /cancel)")
         bot.answer_callback_query(call.id)
 
-# --- التفاعل مع النصوص والأزرار ---
+# --- التفاعل مع كل النصوص (العملاء والإدارة) ---
 @bot.message_handler(func=lambda message: True)
 def handle_text(message):
     user_id = message.from_user.id
     text = message.text
+    is_admin = (str(user_id) == str(ADMIN_ID))
 
-    if user_id in admin_states and admin_states[user_id].get('action') == 'replying':
+    # === 1. معالجة حالات الإدارة (لوحة التحكم) ===
+    if is_admin and user_id in admin_states:
         if text == '/cancel':
             del admin_states[user_id]
-            bot.send_message(user_id, "🚫 تم إلغاء وضع الرد.")
+            bot.send_message(user_id, "🚫 تم إلغاء الأمر.", reply_markup=admin_keyboard())
             return
         
-        target_user = admin_states[user_id]['target_user']
+        state = admin_states[user_id]
+        action = state['action']
+        
         try:
-            bot.send_message(target_user, f"📩 <b>رسالة من الإدارة:</b>\n\n{text}", parse_mode="HTML")
-            bot.send_message(user_id, f"✅ تم إرسال رسالتك للعميل بنجاح.")
-        except:
-            bot.send_message(user_id, "❌ فشل الإرسال، يبدو أن العميل قام بإيقاف البوت.")
+            if action == 'ban_user':
+                target_id = int(text)
+                users_collection.update_one({"user_id": target_id}, {"$set": {"is_banned": True}})
+                bot.send_message(user_id, f"✅ تم حظر المستخدم {target_id}", reply_markup=admin_keyboard())
+            
+            elif action == 'unban_user':
+                target_id = int(text)
+                users_collection.update_one({"user_id": target_id}, {"$set": {"is_banned": False}})
+                bot.send_message(user_id, f"✅ تم فك الحظر عن {target_id}", reply_markup=admin_keyboard())
+                
+            elif action == 'add_points':
+                parts = text.split()
+                target_id = int(parts[0])
+                pts = int(parts[1])
+                users_collection.update_one({"user_id": target_id}, {"$inc": {"points": pts}})
+                bot.send_message(user_id, f"✅ تمت إضافة {pts} نقطة للعميل {target_id}")
+                try: bot.send_message(target_id, f"🎉 <b>تم شحن حسابك بـ {pts} نقطة!</b>")
+                except: pass
+
+            elif action == 'remove_points':
+                parts = text.split()
+                target_id = int(parts[0])
+                pts = int(parts[1])
+                users_collection.update_one({"user_id": target_id}, {"$inc": {"points": -pts}})
+                bot.send_message(user_id, f"✅ تم سحب {pts} نقطة من العميل {target_id}")
+                
+            elif action == 'reply_user_step1':
+                admin_states[user_id] = {'action': 'reply_user', 'target': text}
+                bot.send_message(user_id, "✍️ اكتب رسالتك الآن التي تريد إرسالها له:")
+                return # ننتظر الرسالة
+                
+            elif action == 'reply_user':
+                target_id = int(state['target'])
+                bot.send_message(target_id, f"📩 <b>رسالة من الإدارة:</b>\n\n{text}")
+                bot.send_message(user_id, "✅ تم إرسال رسالتك للعميل بنجاح.", reply_markup=admin_keyboard())
+                
+            elif action == 'broadcast':
+                users = users_collection.find({})
+                count = 0
+                for u in users:
+                    try:
+                        bot.send_message(u['user_id'], f"📢 <b>إعلان من الإدارة:</b>\n\n{text}")
+                        count += 1
+                    except: pass
+                bot.send_message(user_id, f"✅ تمت الإذاعة بنجاح لـ {count} مستخدم.", reply_markup=admin_keyboard())
+
+            elif action == 'change_price':
+                new_price = int(text)
+                settings_collection.update_one({"_id": "bot_settings"}, {"$set": {"service_price": new_price}})
+                bot.send_message(user_id, f"✅ تم تغيير سعر جميع الخدمات إلى {new_price} نقطة.", reply_markup=admin_keyboard())
+                # إشعار جميع المستخدمين بتغيير السعر
+                users = users_collection.find({})
+                for u in users:
+                    try: bot.send_message(u['user_id'], f"📣 <b>تحديث في المتجر:</b>\n\nتم تعديل سعر طلب الخدمات ليصبح <b>{new_price}</b> نقطة. سارع بالطلب الآن!")
+                    except: pass
+
+            elif action == 'change_referral':
+                new_ref = int(text)
+                settings_collection.update_one({"_id": "bot_settings"}, {"$set": {"referral_bonus": new_ref}})
+                bot.send_message(user_id, f"✅ تم تغيير مكافأة الدعوة إلى {new_ref} نقطة.", reply_markup=admin_keyboard())
+        
+        except Exception as e:
+            bot.send_message(user_id, f"❌ حدث خطأ، يرجى كتابة البيانات بشكل صحيح.\nالخطأ: {e}")
+        
         del admin_states[user_id]
         return
 
+    # === 2. معالجة أزرار لوحة الإدارة ===
+    if is_admin:
+        if text == "🚫 حظر مستخدم":
+            admin_states[user_id] = {'action': 'ban_user'}
+            bot.send_message(user_id, "أرسل الآن ID المستخدم ليتم حظره:\n(أرسل /cancel للإلغاء)")
+            return
+        elif text == "✅ فك حظر":
+            admin_states[user_id] = {'action': 'unban_user'}
+            bot.send_message(user_id, "أرسل الآن ID المستخدم لفك حظره:\n(أرسل /cancel للإلغاء)")
+            return
+        elif text == "➕ إضافة نقاط":
+            admin_states[user_id] = {'action': 'add_points'}
+            bot.send_message(user_id, "أرسل ID العميل ثم مسافة ثم عدد النقاط.\nمثال: <code>123456789 50</code>", parse_mode="HTML")
+            return
+        elif text == "➖ سحب نقاط":
+            admin_states[user_id] = {'action': 'remove_points'}
+            bot.send_message(user_id, "أرسل ID العميل ثم مسافة ثم النقاط المسحوبة.\nمثال: <code>123456789 15</code>", parse_mode="HTML")
+            return
+        elif text == "📩 رد/رسالة لمستخدم":
+            admin_states[user_id] = {'action': 'reply_user_step1'}
+            bot.send_message(user_id, "أرسل أولاً ID العميل الذي تريد مراسلته:")
+            return
+        elif text == "📢 إذاعة للجميع":
+            admin_states[user_id] = {'action': 'broadcast'}
+            bot.send_message(user_id, "أرسل الإعلان الآن وسيتم توزيعه لجميع المستخدمين:")
+            return
+        elif text == "💰 تعديل سعر الخدمات":
+            admin_states[user_id] = {'action': 'change_price'}
+            bot.send_message(user_id, "أرسل السعر الجديد للخدمات (رقم فقط، مثلاً 10 أو 25):")
+            return
+        elif text == "🎁 تعديل مكافأة الدعوة":
+            admin_states[user_id] = {'action': 'change_referral'}
+            bot.send_message(user_id, "أرسل نقاط المكافأة الجديدة لدعوة الأصدقاء (رقم فقط):")
+            return
+
+    # === 3. معالجة العملاء (النظام العادي) ===
     user = users_collection.find_one({"user_id": user_id})
     if not user:
         bot.send_message(user_id, "⚠️ الرجاء إرسال أمر /start أولاً لتسجيل حسابك.")
         return
 
-    if text == BTN_DAILY:
+    if user.get("is_banned", False):
+        bot.send_message(user_id, "⛔️ <b>عذراً، حسابك محظور من استخدام الخدمات.</b>", parse_mode="HTML")
+        return
+
+    # استدعاء الإعدادات الحالية المرنة
+    bot_settings = get_settings()
+    service_price = bot_settings.get("service_price", 15)
+    ref_bonus = bot_settings.get("referral_bonus", 2)
+
+    if text == BTN_MAIN:
+        bot.send_message(user_id, "🏠 مرحباً بك في الرئيسية.", reply_markup=main_keyboard())
+
+    elif text == BTN_DAILY:
         today_str = datetime.datetime.now().strftime("%Y-%m-%d")
         yesterday_str = (datetime.datetime.now() - datetime.timedelta(days=1)).strftime("%Y-%m-%d")
         last_date = user.get("last_collected_date")
@@ -156,60 +271,59 @@ def handle_text(message):
         else:
             streak = 1
             
-        points_to_add = 2 if streak % 7 == 0 else 1
-        users_collection.update_one({"user_id": user_id}, {"$inc": {"points": points_to_add}, "$set": {"last_collected_date": today_str, "streak": streak}})
-        bot.send_message(user_id, f"🎉 مبارك! تمت إضافة <b>{points_to_add}</b> نقطة إلى رصيدك!\n🔥 سلسلة الدخول: {streak} أيام متتالية.")
+        pts_added = 2 if streak % 7 == 0 else 1
+        users_collection.update_one({"user_id": user_id}, {"$inc": {"points": pts_added}, "$set": {"last_collected_date": today_str, "streak": streak}})
+        bot.send_message(user_id, f"🎉 مبارك! تمت إضافة <b>{pts_added}</b> نقطة إلى رصيدك!\n🔥 سلسلة الدخول: {streak} أيام متتالية.")
 
     elif text == BTN_ACCOUNT:
         points = user.get("points", 0)
         invites = user.get("invites", 0)
         name = user.get("first_name", "غير معروف")
-        info = (f"👤 <b>الاسم:</b> {name}\n🆔 <b>رقم الحساب:</b> <code>{user_id}</code>\n⭐ <b>الرصيد:</b> {points} نقطة\n🤝 <b>المدعوين:</b> {invites}")
-        bot.send_message(user_id, info)
+        bot.send_message(user_id, f"👤 <b>الاسم:</b> {name}\n🆔 <b>رقم الحساب:</b> <code>{user_id}</code>\n⭐ <b>الرصيد:</b> {points} نقطة\n🤝 <b>المدعوين:</b> {invites}")
 
     elif text == BTN_INVITE:
         bot_info = bot.get_me()
         invite_link = f"https://t.me/{bot_info.username}?start={user_id}"
-        bot.send_message(user_id, f"🎁 <b>دعوة الأصدقاء</b>\n\nشارك الرابط واحصل على (2) نقطتين عن كل تسجيل:\n\n{invite_link}")
+        bot.send_message(user_id, f"🎁 <b>دعوة الأصدقاء</b>\n\nشارك الرابط واحصل على ({ref_bonus}) نقطة عن كل تسجيل:\n\n{invite_link}")
 
     elif text == BTN_CONTACT:
         bot.send_message(user_id, "💬 للتواصل المباشر مع الإدارة:\n\n<a href='https://t.me/bdallhshay7'>اضغط هنا للتواصل مع الدعم</a>", parse_mode="HTML")
 
     elif text == BTN_YT:
         points = user.get("points", 0)
-        if points >= 15:
-            msg = bot.send_message(user_id, "📺 <b>يوتيوب بريميوم</b>\nاستمتع بمشاهدة بدون إعلانات.\n\n💎 <b>التكلفة:</b> 15 نقطة.")
+        if points >= service_price:
+            msg = bot.send_message(user_id, f"📺 <b>يوتيوب بريميوم</b>\nاستمتع بمشاهدة بدون إعلانات.\n\n💎 <b>التكلفة:</b> {service_price} نقطة.")
             markup = InlineKeyboardMarkup()
             markup.add(InlineKeyboardButton("📝 فتح النموذج للطلب", web_app=WebAppInfo(url=f"https://mybot-1-d6wr.onrender.com/youtube.html?uid={user_id}&msg_id={msg.message_id}")))
             bot.edit_message_reply_markup(user_id, msg.message_id, reply_markup=markup)
         else:
-            bot.send_message(user_id, f"📺 <b>يوتيوب بريميوم</b>\n\n😔 <b>عذراً، رصيدك غير كافٍ.</b>\nرصيدك: {points} نقطة.")
+            bot.send_message(user_id, f"📺 <b>يوتيوب بريميوم</b>\n\n😔 <b>عذراً، رصيدك غير كافٍ.</b>\nرصيدك: {points} نقطة.\nالمطلوب: {service_price} نقطة.")
 
     elif text == BTN_SPOTIFY:
         points = user.get("points", 0)
-        if points >= 15:
-            msg = bot.send_message(user_id, "🎵 <b>سبوتيفاي بريميوم</b>\nاستمع للموسيقى بأعلى جودة.\n\n💎 <b>التكلفة:</b> 15 نقطة.")
+        if points >= service_price:
+            msg = bot.send_message(user_id, f"🎵 <b>سبوتيفاي بريميوم</b>\nاستمع للموسيقى بأعلى جودة.\n\n💎 <b>التكلفة:</b> {service_price} نقطة.")
             markup = InlineKeyboardMarkup()
             markup.add(InlineKeyboardButton("📝 فتح النموذج للطلب", web_app=WebAppInfo(url=f"https://mybot-1-d6wr.onrender.com/spotify.html?uid={user_id}&msg_id={msg.message_id}")))
             bot.edit_message_reply_markup(user_id, msg.message_id, reply_markup=markup)
         else:
-            bot.send_message(user_id, f"🎵 <b>سبوتيفاي بريميوم</b>\n\n😔 <b>عذراً، رصيدك غير كافٍ.</b>\nرصيدك: {points} نقطة.")
+            bot.send_message(user_id, f"🎵 <b>سبوتيفاي بريميوم</b>\n\n😔 <b>عذراً، رصيدك غير كافٍ.</b>\nرصيدك: {points} نقطة.\nالمطلوب: {service_price} نقطة.")
 
     elif text == BTN_GEMINI:
         points = user.get("points", 0)
-        if points >= 15:
-            msg = bot.send_message(user_id, "✨ <b>جيميناي برو</b>\nالذكاء الاصطناعي الأقوى.\n\n💎 <b>التكلفة:</b> 15 نقطة.")
+        if points >= service_price:
+            msg = bot.send_message(user_id, f"✨ <b>جيميناي برو</b>\nالذكاء الاصطناعي الأقوى.\n\n💎 <b>التكلفة:</b> {service_price} نقطة.")
             markup = InlineKeyboardMarkup()
             markup.add(InlineKeyboardButton("📝 فتح النموذج للطلب", web_app=WebAppInfo(url=f"https://mybot-1-d6wr.onrender.com/gemini.html?uid={user_id}&pts={points}&msg_id={msg.message_id}")))
             bot.edit_message_reply_markup(user_id, msg.message_id, reply_markup=markup)
         else:
-            bot.send_message(user_id, f"✨ <b>جيميناي برو</b>\n\n😔 <b>عذراً، رصيدك غير كافٍ.</b>\nرصيدك: {points} نقطة.")
+            bot.send_message(user_id, f"✨ <b>جيميناي برو</b>\n\n😔 <b>عذراً، رصيدك غير كافٍ.</b>\nرصيدك: {points} نقطة.\nالمطلوب: {service_price} نقطة.")
 
-    elif text in [BTN_MAIN, BTN_HELP, BTN_GUIDE, BTN_DEPOSIT]:
+    elif text in [BTN_HELP, BTN_GUIDE, BTN_DEPOSIT]:
         bot.send_message(user_id, "⏳ سيتم إضافة المحتوى قريباً...")
 
 # ==========================================
-# --- نظام API لاستقبال بيانات النماذج (الحل الجذري) ---
+# --- نظام API لاستقبال بيانات النماذج ---
 # ==========================================
 @app.route('/submit_form', methods=['POST'])
 def submit_form():
@@ -219,39 +333,33 @@ def submit_form():
     form_data = data.get('dataString')
 
     user = users_collection.find_one({"user_id": user_id})
-    if user and user.get("points", 0) >= 15:
-        # 1. خصم النقاط
-        users_collection.update_one({"user_id": user_id}, {"$inc": {"points": -15}})
-        new_points = user.get("points", 0) - 15
-        user_name = user.get("first_name", "عميل")
+    if user and user.get("is_banned", False):
+        return jsonify({"status": "banned"}), 403
+
+    bot_settings = get_settings()
+    service_price = bot_settings.get("service_price", 15)
+
+    if user and user.get("points", 0) >= service_price:
+        users_collection.update_one({"user_id": user_id}, {"$inc": {"points": -service_price}})
+        new_points = user.get("points", 0) - service_price
         
-        # 2. إرسال الطلب للأدمن
         if ADMIN_ID:
-            admin_msg = f"🔔 <b>طلب جديد استلمناه للتو!</b>\n\n👤 العميل: {user_name}\n🆔 رقم العميل: <code>{user_id}</code>\n\n📋 <b>البيانات المرسلة:</b>\n{form_data}"
+            admin_msg = f"🔔 <b>طلب جديد استلمناه للتو!</b>\n\n👤 العميل: {user.get('first_name', 'عميل')}\n🆔 رقم العميل: <code>{user_id}</code>\n\n📋 <b>البيانات المرسلة:</b>\n{form_data}"
             markup = InlineKeyboardMarkup()
             markup.add(InlineKeyboardButton("✍️ رد على العميل", callback_data=f"reply_{user_id}"))
-            try:
-                bot.send_message(ADMIN_ID, admin_msg, reply_markup=markup)
-            except:
-                pass
+            try: bot.send_message(ADMIN_ID, admin_msg, reply_markup=markup)
+            except: pass
         
-        # 3. حذف رسالة زر فتح النموذج
-        try:
-            bot.delete_message(user_id, msg_id) 
-        except:
-            pass
+        try: bot.delete_message(user_id, msg_id) 
+        except: pass
             
-        # 4. إرسال رسالة التأكيد الأنيقة
-        success_msg = f"🎉 <b>طلبك قيد التنفيذ، الرجاء الانتظار!</b>\n\n⭐ <b>رصيدك المتبقي:</b> {new_points} نقطة.\n\n<a href='https://t.me/bdallhshay7'>💬 للتواصل والاستفسار اضغط هنا</a>"
-        bot.send_message(user_id, success_msg)
-        
+        bot.send_message(user_id, f"🎉 <b>طلبك قيد التنفيذ، الرجاء الانتظار!</b>\n\n⭐ <b>رصيدك المتبقي:</b> {new_points} نقطة.\n\n<a href='https://t.me/bdallhshay7'>💬 للتواصل والاستفسار اضغط هنا</a>")
         return jsonify({"status": "success"}), 200
     
     return jsonify({"status": "error"}), 400
 
-
 # ==========================================
-# --- أكواد ونماذج HTML المدمجة (متصلة بالـ API) ---
+# --- أكواد ونماذج HTML المدمجة ---
 # ==========================================
 
 @app.route('/youtube.html')
@@ -495,7 +603,6 @@ def gemini_form():
     </html>
     ''', 200
 
-# --- إعدادات Webhook لسيرفر Render ---
 @app.route('/' + BOT_TOKEN, methods=['POST'])
 def getMessage():
     try:
