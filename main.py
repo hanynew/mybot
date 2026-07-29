@@ -26,8 +26,20 @@ settings_collection = db['settings']
 def get_settings():
     s = settings_collection.find_one({"_id": "bot_settings"})
     if not s:
-        s = {"_id": "bot_settings", "service_price": 15, "referral_bonus": 2}
+        s = {
+            "_id": "bot_settings", 
+            "price_yt": 15, 
+            "price_spotify": 15, 
+            "price_gemini": 15, 
+            "referral_bonus": 2
+        }
         settings_collection.insert_one(s)
+    # للتأكد من وجود جميع المفاتيح في حال تم تحديث السيرفر
+    if "price_yt" not in s:
+        s["price_yt"] = 15
+        s["price_spotify"] = 15
+        s["price_gemini"] = 15
+        settings_collection.update_one({"_id": "bot_settings"}, {"$set": s})
     return s
 
 admin_states = {}
@@ -55,33 +67,37 @@ def main_keyboard():
     markup.add(KeyboardButton(BTN_MAIN))
     return markup
 
+# لوحة مفاتيح خاصة بالمجموعة (زرين فقط)
+def group_keyboard():
+    markup = ReplyKeyboardMarkup(resize_keyboard=True, row_width=2)
+    markup.add(KeyboardButton(BTN_DAILY), KeyboardButton(BTN_ACCOUNT))
+    return markup
+
 def admin_keyboard():
     markup = ReplyKeyboardMarkup(resize_keyboard=True, row_width=2)
     markup.add(KeyboardButton("🚫 حظر مستخدم"), KeyboardButton("✅ فك حظر"))
     markup.add(KeyboardButton("➕ إضافة نقاط"), KeyboardButton("➖ سحب نقاط"))
     markup.add(KeyboardButton("📩 رد/رسالة لمستخدم"), KeyboardButton("📢 إذاعة للجميع"))
-    markup.add(KeyboardButton("💰 تعديل سعر الخدمات"), KeyboardButton("🎁 تعديل مكافأة الدعوة"))
+    markup.add(KeyboardButton("📺 سعر يوتيوب"), KeyboardButton("🎵 سعر سبوتيفاي"))
+    markup.add(KeyboardButton("✨ سعر جيميناي"), KeyboardButton("🎁 تعديل مكافأة الدعوة"))
     markup.add(KeyboardButton("📊 إحصائيات المستخدمين"), KeyboardButton("🚫 قائمة المحظورين"))
     markup.add(KeyboardButton("🔍 استعلام عن مستخدم"), KeyboardButton(BTN_MAIN))
     return markup
 
-# --- دالة التحقق من الاشتراك الإجباري ---
 def check_user_subscription(user_id):
     if str(user_id) == str(ADMIN_ID):
-        return True # الأدمن مستثنى
+        return True
     try:
-        # فحص القناة
         channel_member = bot.get_chat_member(CHANNEL_USERNAME, user_id)
         if channel_member.status in ['left', 'kicked']:
             return False
-        # فحص المجموعة
         group_member = bot.get_chat_member(GROUP_USERNAME, user_id)
         if group_member.status in ['left', 'kicked']:
             return False
         return True
     except Exception as e:
         print(f"Error checking sub: {e}")
-        return True # لتفادي توقف البوت في حال خطأ تقني بالصلاحيات
+        return True
 
 def subscription_required_markup():
     markup = InlineKeyboardMarkup()
@@ -90,7 +106,6 @@ def subscription_required_markup():
     markup.add(InlineKeyboardButton("✅ تحقق من الاشتراك", callback_data="check_subscription"))
     return markup
 
-# --- أمر فتح لوحة الإدارة ---
 @bot.message_handler(commands=['admin'])
 def open_admin_panel(message):
     if str(message.from_user.id) == str(ADMIN_ID):
@@ -98,7 +113,6 @@ def open_admin_panel(message):
     else:
         bot.send_message(message.chat.id, "⛔️ عذراً، لا تملك صلاحية الدخول.")
 
-# --- رسالة الترحيب والاشتراك الإجباري ---
 @bot.message_handler(commands=['start'])
 def send_welcome(message):
     user_id = message.from_user.id
@@ -111,7 +125,6 @@ def send_welcome(message):
         bot.send_message(user_id, "⛔️ <b>عذراً، تم حظر حسابك من استخدام هذا البوت.</b>", parse_mode="HTML")
         return
 
-    # فحص الاشتراك الإجباري
     if not check_user_subscription(user_id):
         bot.send_message(
             user_id, 
@@ -142,9 +155,11 @@ def send_welcome(message):
                 except: pass
 
     welcome_text = f"أهلاً بك يا <b>{first_name}</b> في متجرنا الإلكتروني <b>بوابة الاشتراكات</b>! 🤖✨\n\nتفضل باختيار ما تريد من القائمة التفاعلية بالأسفل 👇"
-    bot.send_message(message.chat.id, welcome_text, reply_markup=main_keyboard())
+    
+    # تحديد نوع اللوحة (خاصة أم مجموعة)
+    kb = group_keyboard() if message.chat.type in ['group', 'supergroup'] else main_keyboard()
+    bot.send_message(message.chat.id, welcome_text, reply_markup=kb)
 
-# --- معالجة زر التحقق من الاشتراك ---
 @bot.callback_query_handler(func=lambda call: call.data == "check_subscription")
 def verify_subscription(call):
     user_id = call.from_user.id
@@ -156,25 +171,6 @@ def verify_subscription(call):
     else:
         bot.answer_callback_query(call.id, "❌ لم تقم بالانضمام للقناة أو المجموعة بعد!", show_alert=True)
 
-# --- حماية المجموعة (حذف الروابط + الحظر التلقائي) ---
-@bot.message_handler(func=lambda message: message.chat.type in ['group', 'supergroup'])
-def group_moderation(message):
-    user_id = message.from_user.id
-    if str(user_id) == str(ADMIN_ID):
-        return
-
-    text = message.text or ""
-    has_link = ("http://" in text or "https://" in text or "t.me/" in text or "@" in text)
-    
-    if has_link:
-        try:
-            bot.delete_message(message.chat.id, message.message_id)
-            users_collection.update_one({"user_id": user_id}, {"$set": {"is_banned": True}})
-            bot.ban_chat_member(message.chat.id, user_id)
-            bot.send_message(message.chat.id, f"🚫 تم حظر العضو <code>{user_id}</code> آلياً بسبب نشر روابط أو إعلانات.", parse_mode="HTML")
-        except Exception as e:
-            print(f"Error in moderation: {e}")
-
 # --- زر الرد من تحت الطلب مباشرة ---
 @bot.callback_query_handler(func=lambda call: call.data.startswith('reply_'))
 def handle_reply_button(call):
@@ -184,13 +180,28 @@ def handle_reply_button(call):
         bot.send_message(ADMIN_ID, f"✍️ <b>وضع الرد مفعل:</b>\nاكتب رسالتك الآن للعميل: <code>{target_id}</code>\n\n(لإلغاء الأمر أرسل /cancel)")
         bot.answer_callback_query(call.id)
 
-# --- التفاعل مع كل النصوص (العملاء والإدارة) ---
+# --- التفاعل مع كل النصوص (في الخص والمجموعات والإدارة) ---
 @bot.message_handler(func=lambda message: True)
 def handle_text(message):
     user_id = message.from_user.id
     text = message.text
     is_admin = (str(user_id) == str(ADMIN_ID))
+    is_group = message.chat.type in ['group', 'supergroup']
 
+    # === 1. حماية المجموعة وحذف الروابط للإعضاء العاديين ===
+    if is_group and not is_admin:
+        has_link = ("http://" in text or "https://" in text or "t.me/" in text or "@" in text)
+        if has_link:
+            try:
+                bot.delete_message(message.chat.id, message.message_id)
+                users_collection.update_one({"user_id": user_id}, {"$set": {"is_banned": True}})
+                bot.ban_chat_member(message.chat.id, user_id)
+                bot.send_message(message.chat.id, f"🚫 تم حظر العضو <code>{user_id}</code> آلياً بسبب نشر روابط أو إعلانات.", parse_mode="HTML")
+                return
+            except Exception as e:
+                print(f"Error in moderation: {e}")
+
+    # === 2. معالجة أوامر لوحة الإدارة ===
     if is_admin and user_id in admin_states:
         if text == '/cancel':
             del admin_states[user_id]
@@ -228,22 +239,31 @@ def handle_text(message):
                 return
             elif action == 'reply_user':
                 target_id = int(state['target'])
-                bot.send_message(target_id, f"📩 <b>رسالة من الإدارة:</b>\n\n{text}")
+                # الرد يظهر بدون عبارة "من الإدارة" كما طلبت
+                bot.send_message(target_id, text)
                 bot.send_message(user_id, "✅ تم إرسال رسالتك للعميل بنجاح.", reply_markup=admin_keyboard())
             elif action == 'broadcast':
                 users = users_collection.find({})
                 count = 0
                 for u in users:
-                    try: bot.send_message(u['user_id'], f"📢 <b>إعلان من الإدارة:</b>\n\n{text}"); count += 1
+                    try: bot.send_message(u['user_id'], text); count += 1
                     except: pass
                 bot.send_message(user_id, f"✅ تمت الإذاعة بنجاح لـ {count} مستخدم.", reply_markup=admin_keyboard())
-            elif action == 'change_price':
+            
+            # أسعار الخدمات المخصصة
+            elif action == 'change_price_yt':
                 new_price = int(text)
-                settings_collection.update_one({"_id": "bot_settings"}, {"$set": {"service_price": new_price}})
-                bot.send_message(user_id, f"✅ تم تغيير سعر جميع الخدمات إلى {new_price} نقطة.", reply_markup=admin_keyboard())
-                for u in users_collection.find({}):
-                    try: bot.send_message(u['user_id'], f"📣 <b>تحديث في المتجر:</b>\n\nتم تعديل سعر طلب الخدمات ليصبح <b>{new_price}</b> نقطة. سارع بالطلب الآن!")
-                    except: pass
+                settings_collection.update_one({"_id": "bot_settings"}, {"$set": {"price_yt": new_price}})
+                bot.send_message(user_id, f"✅ تم تغيير سعر خدمة يوتيوب إلى {new_price} نقطة.", reply_markup=admin_keyboard())
+            elif action == 'change_price_spotify':
+                new_price = int(text)
+                settings_collection.update_one({"_id": "bot_settings"}, {"$set": {"price_spotify": new_price}})
+                bot.send_message(user_id, f"✅ تم تغيير سعر خدمة سبوتيفاي إلى {new_price} نقطة.", reply_markup=admin_keyboard())
+            elif action == 'change_price_gemini':
+                new_price = int(text)
+                settings_collection.update_one({"_id": "bot_settings"}, {"$set": {"price_gemini": new_price}})
+                bot.send_message(user_id, f"✅ تم تغيير سعر خدمة جيميناي إلى {new_price} نقطة.", reply_markup=admin_keyboard())
+
             elif action == 'change_referral':
                 new_ref = int(text)
                 settings_collection.update_one({"_id": "bot_settings"}, {"$set": {"referral_bonus": new_ref}})
@@ -263,7 +283,7 @@ def handle_text(message):
         del admin_states[user_id]
         return
 
-    if is_admin:
+    if is_admin and not is_group:
         if text == "🚫 حظر مستخدم":
             admin_states[user_id] = {'action': 'ban_user'}; bot.send_message(user_id, "أرسل الآن ID المستخدم ليتم حظره:\n(أرسل /cancel للإلغاء)"); return
         elif text == "✅ فك حظر":
@@ -276,8 +296,12 @@ def handle_text(message):
             admin_states[user_id] = {'action': 'reply_user_step1'}; bot.send_message(user_id, "أرسل أولاً ID العميل الذي تريد مراسلته:"); return
         elif text == "📢 إذاعة للجميع":
             admin_states[user_id] = {'action': 'broadcast'}; bot.send_message(user_id, "أرسل الإعلان الآن وسيتم توزيعه لجميع المستخدمين:"); return
-        elif text == "💰 تعديل سعر الخدمات":
-            admin_states[user_id] = {'action': 'change_price'}; bot.send_message(user_id, "أرسل السعر الجديد للخدمات (رقم فقط، مثلاً 10 أو 25):"); return
+        elif text == "📺 سعر يوتيوب":
+            admin_states[user_id] = {'action': 'change_price_yt'}; bot.send_message(user_id, "أرسل السعر الجديد لخدمة يوتيوب (رقم فقط):"); return
+        elif text == "🎵 سعر سبوتيفاي":
+            admin_states[user_id] = {'action': 'change_price_spotify'}; bot.send_message(user_id, "أرسل السعر الجديد لخدمة سبوتيفاي (رقم فقط):"); return
+        elif text == "✨ سعر جيميناي":
+            admin_states[user_id] = {'action': 'change_price_gemini'}; bot.send_message(user_id, "أرسل السعر الجديد لخدمة جيميناي (رقم فقط):"); return
         elif text == "🎁 تعديل مكافأة الدعوة":
             admin_states[user_id] = {'action': 'change_referral'}; bot.send_message(user_id, "أرسل نقاط المكافأة الجديدة لدعوة الأصدقاء (رقم فقط):"); return
         elif text == "🔍 استعلام عن مستخدم":
@@ -303,7 +327,7 @@ def handle_text(message):
                 bot.send_message(user_id, msg, reply_markup=admin_keyboard())
             return
 
-    # فحص الاشتراك الإجباري لكل تفاعل من العميل
+    # === 3. معالجة تفاعل العملاء (في البوت أو المجموعة) ===
     if not check_user_subscription(user_id):
         bot.send_message(
             user_id, 
@@ -317,46 +341,99 @@ def handle_text(message):
     if user.get("is_banned", False): return bot.send_message(user_id, "⛔️ <b>عذراً، حسابك محظور من استخدام الخدمات.</b>", parse_mode="HTML")
 
     bot_settings = get_settings()
-    service_price = bot_settings.get("service_price", 15)
     ref_bonus = bot_settings.get("referral_bonus", 2)
 
-    if text == BTN_MAIN:
-        bot.send_message(user_id, "🏠 مرحباً بك في الرئيسية.", reply_markup=main_keyboard())
-
-    elif text == BTN_DAILY:
+    # --- الهدية اليومية بتصميمها الجديد ---
+    if text == BTN_DAILY:
         today_str = datetime.datetime.now().strftime("%Y-%m-%d")
         yesterday_str = (datetime.datetime.now() - datetime.timedelta(days=1)).strftime("%Y-%m-%d")
         last_date = user.get("last_collected_date")
         streak = user.get("streak", 0)
-        if last_date == today_str: return bot.send_message(user_id, "⏳ لقد قمت بجمع هديتك اليوم! ننتظرك غداً بشوق.")
+
+        if last_date == today_str:
+            resp = bot.send_message(message.chat.id, "⏳ لقد قمت بجمع هديتك اليوم! ننتظرك غداً بشوق.")
+            if is_group:
+                try:
+                    bot.delete_message(message.chat.id, message.message_id)
+                    # حذف رد البوت بعد 5 ثوانٍ في المجموعة للحفاظ على النظافة
+                except: pass
+            return
+
         streak = streak + 1 if last_date == yesterday_str else 1
-        pts_added = 2 if streak % 7 == 0 else 1
+        is_seventh_day = (streak % 7 == 0)
+        pts_added = 2 if is_seventh_day else 1
+        
+        new_points = user.get("points", 0) + pts_added
         users_collection.update_one({"user_id": user_id}, {"$inc": {"points": pts_added}, "$set": {"last_collected_date": today_str, "streak": streak}})
-        bot.send_message(user_id, f"🎉 مبارك! تمت إضافة <b>{pts_added}</b> نقطة إلى رصيدك!\n🔥 سلسلة الدخول: {streak} أيام متتالية.")
+        
+        if is_seventh_day:
+            daily_msg = (
+                f"🎉 <b>تسجيل حضور ناجح!</b>\n"
+                f"═══════════════════════\n\n"
+                f"💎 +2 عملة |\n"
+                f"💰 الرصيد: {new_points} عملة |\n"
+                f"📅 سلسلة الأيام: {streak} أيام\n"
+                f"═══════════════════════\n\n"
+                f"🔥 <b>سلسلة 7 أيام!</b>\n\n"
+                f"لقد حصلت على 2 عملة بدلاً من 1 عملة!"
+            )
+        else:
+            daily_msg = (
+                f"🎉 <b>تسجيل حضور ناجح!</b>\n"
+                f"═══════════════════════\n\n"
+                f"💎 +1 وحدة نقدية |\n"
+                f"💰 الرصيد: {new_points} وحدة نقدية |\n"
+                f"📅 عدد الأيام المتتالية: {streak} يوم\n"
+                f"═══════════════════════"
+            )
+
+        resp = bot.send_message(message.chat.id, daily_msg, parse_mode="HTML")
+        if is_group:
+            try:
+                bot.delete_message(message.chat.id, message.message_id)
+            except: pass
 
     elif text == BTN_ACCOUNT:
         points = user.get("points", 0)
-        bot.send_message(user_id, f"👤 <b>الاسم:</b> {user.get('first_name', 'غير معروف')}\n🆔 <b>رقم الحساب:</b> <code>{user_id}</code>\n⭐ <b>الرصيد:</b> {points} نقطة\n🤝 <b>المدعوين:</b> {user.get('invites', 0)}")
+        account_msg = f"👤 <b>الاسم:</b> {user.get('first_name', 'غير معروف')}\n🆔 <b>رقم الحساب:</b> <code>{user_id}</code>\n⭐ <b>الرصيد:</b> {points} نقطة\n🤝 <b>المدعوين:</b> {user.get('invites', 0)}"
+        resp = bot.send_message(message.chat.id, account_msg, parse_mode="HTML")
+        if is_group:
+            try:
+                bot.delete_message(message.chat.id, message.message_id)
+            except: pass
 
-    elif text == BTN_INVITE:
+    # الخدمات السفلية تعمل في البوت الخاص فقط
+    elif text == BTN_MAIN and not is_group:
+        bot.send_message(user_id, "🏠 مرحباً بك في الرئيسية.", reply_markup=main_keyboard())
+
+    elif text == BTN_INVITE and not is_group:
         bot.send_message(user_id, f"🎁 <b>دعوة الأصدقاء</b>\n\nشارك الرابط واحصل على ({ref_bonus}) نقطة عن كل تسجيل:\n\nhttps://t.me/{bot.get_me().username}?start={user_id}")
 
-    elif text == BTN_CONTACT:
+    elif text == BTN_CONTACT and not is_group:
         bot.send_message(user_id, "💬 للتواصل المباشر مع الإدارة:\n\n<a href='https://t.me/bdallhshay7'>اضغط هنا للتواصل مع الدعم</a>", parse_mode="HTML")
 
-    elif text in [BTN_YT, BTN_SPOTIFY, BTN_GEMINI]:
+    elif text in [BTN_YT, BTN_SPOTIFY, BTN_GEMINI] and not is_group:
         points = user.get("points", 0)
+        
+        # ربط كل خدمة بسعرها المخصص
+        price_map = {
+            BTN_YT: bot_settings.get("price_yt", 15),
+            BTN_SPOTIFY: bot_settings.get("price_spotify", 15),
+            BTN_GEMINI: bot_settings.get("price_gemini", 15)
+        }
+        service_price = price_map[text]
+
         if points >= service_price:
             urls = {BTN_YT: "youtube.html", BTN_SPOTIFY: "spotify.html", BTN_GEMINI: "gemini.html"}
             names = {BTN_YT: "📺 يوتيوب بريميوم", BTN_SPOTIFY: "🎵 سبوتيفاي بريميوم", BTN_GEMINI: "✨ جيميناي برو"}
             msg = bot.send_message(user_id, f"{names[text]}\n\n💎 <b>التكلفة:</b> {service_price} نقطة.")
             markup = InlineKeyboardMarkup()
-            markup.add(InlineKeyboardButton("📝 فتح النموذج للطلب", web_app=WebAppInfo(url=f"https://mybot-1-d6wr.onrender.com/{urls[text]}?uid={user_id}&pts={points}&msg_id={msg.message_id}")))
+            markup.add(InlineKeyboardButton("📝 فتح النموذج للطلب", web_app=WebAppInfo(url=f"https://mybot-1-d6wr.onrender.com/{urls[text]}?uid={user_id}&pts={points}&service={urls[text].split('.')[0]}&msg_id={msg.message_id}")))
             bot.edit_message_reply_markup(user_id, msg.message_id, reply_markup=markup)
         else:
             bot.send_message(user_id, f"😔 <b>عذراً، رصيدك غير كافٍ.</b>\nرصيدك: {points} نقطة.\nالمطلوب: {service_price} نقطة.")
 
-    elif text in [BTN_HELP, BTN_GUIDE, BTN_DEPOSIT]:
+    elif text in [BTN_HELP, BTN_GUIDE, BTN_DEPOSIT] and not is_group:
         bot.send_message(user_id, "⏳ سيتم إضافة المحتوى قريباً...")
 
 # ==========================================
@@ -367,13 +444,20 @@ def submit_form():
     data = request.json
     user_id = int(data.get('uid'))
     msg_id = int(data.get('msg_id'))
+    service_type = data.get('service', 'yt') # yt, spotify, gemini
     form_data = data.get('dataString')
 
     user = users_collection.find_one({"user_id": user_id})
     if user and user.get("is_banned", False): return jsonify({"status": "banned"}), 403
 
     bot_settings = get_settings()
-    service_price = bot_settings.get("service_price", 15)
+    
+    price_map = {
+        'youtube': bot_settings.get("price_yt", 15),
+        'spotify': bot_settings.get("price_spotify", 15),
+        'gemini': bot_settings.get("price_gemini", 15)
+    }
+    service_price = price_map.get(service_type, 15)
 
     if user and user.get("points", 0) >= service_price:
         users_collection.update_one({"user_id": user_id}, {"$inc": {"points": -service_price}})
@@ -395,7 +479,7 @@ def submit_form():
     return jsonify({"status": "error"}), 400
 
 # ==========================================
-# --- أكواد ونماذج HTML المدمجة (مع الفلترة الشاملة) ---
+# --- أكواد ونماذج HTML المدمجة ---
 # ==========================================
 
 @app.route('/youtube.html')
@@ -433,7 +517,8 @@ def youtube_form():
             let tg = window.Telegram.WebApp;
             tg.expand();
             const urlParams = new URLSearchParams(window.location.search);
-            const uid = urlParams.get('uid'); const msg_id = urlParams.get('msg_id');
+            const uid = urlParams.get('uid'); 
+            const msg_id = urlParams.get('msg_id');
 
             function clearError(id) {
                 document.getElementById(id).classList.remove('input-error');
@@ -460,7 +545,7 @@ def youtube_form():
                 document.getElementById('submitBtn').innerText = "جاري الإرسال...";
                 fetch('/submit_form', {
                     method: 'POST', headers: {'Content-Type': 'application/json'},
-                    body: JSON.stringify({uid: uid, msg_id: msg_id, dataString: "الخدمة: يوتيوب بريميوم \\nالرابط: " + link})
+                    body: JSON.stringify({uid: uid, msg_id: msg_id, service: 'youtube', dataString: "الخدمة: يوتيوب بريميوم \\nالرابط: " + link})
                 }).then(() => tg.close()).catch(() => {
                     alert("حدث خطأ أثناء الإرسال.");
                     document.getElementById('submitBtn').disabled = false;
@@ -534,7 +619,7 @@ def spotify_form():
                 document.getElementById('submitBtn').innerText = "جاري الإرسال...";
                 fetch('/submit_form', {
                     method: 'POST', headers: {'Content-Type': 'application/json'},
-                    body: JSON.stringify({uid: uid, msg_id: msg_id, dataString: "الخدمة: سبوتيفاي بريميوم \\nالرابط: " + link})
+                    body: JSON.stringify({uid: uid, msg_id: msg_id, service: 'spotify', dataString: "الخدمة: سبوتيفاي بريميوم \\nالرابط: " + link})
                 }).then(() => tg.close()).catch(() => {
                     alert("حدث خطأ أثناء الإرسال.");
                     document.getElementById('submitBtn').disabled = false;
@@ -705,7 +790,7 @@ def gemini_form():
                 
                 fetch('/submit_form', {
                     method: 'POST', headers: {'Content-Type': 'application/json'},
-                    body: JSON.stringify({uid: uid, msg_id: msg_id, dataString: dataString})
+                    body: JSON.stringify({uid: uid, msg_id: msg_id, service: 'gemini', dataString: dataString})
                 }).then(() => tg.close()).catch(() => {
                     alert("حدث خطأ أثناء الإرسال.");
                     document.getElementById('submitBtn').disabled = false;
