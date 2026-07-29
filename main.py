@@ -93,7 +93,7 @@ def subscription_required_markup():
     markup.add(InlineKeyboardButton("✅ تحقق من الاشتراك", callback_data="check_subscription"))
     return markup
 
-# وظيفة حذف الرسائل المزدوجة (الطلب والرد)
+# وظيفة حذف الرسائل المزدوجة (الطلب والرد) بدقة
 def delayed_delete(chat_id, user_msg_id, bot_msg_id, delay=2.5):
     time.sleep(delay)
     try: bot.delete_message(chat_id, user_msg_id)
@@ -146,6 +146,7 @@ def verify_subscription(call):
         send_welcome(call.message)
     else: bot.answer_callback_query(call.id, "❌ لم تقم بالانضمام للقناة أو المجموعة بعد!", show_alert=True)
 
+# أزرار الإدارة التفاعلية (تبقى ظاهرة دائماً)
 @bot.callback_query_handler(func=lambda call: call.data.startswith('unban_temp_') or call.data.startswith('ban_perm_'))
 def handle_moderation_actions(call):
     if str(call.from_user.id) != str(ADMIN_ID): return bot.answer_callback_query(call.id, "⛔️ للآدمن فقط!", show_alert=True)
@@ -156,7 +157,6 @@ def handle_moderation_actions(call):
             bot.restrict_chat_member(GROUP_USERNAME, target_id, can_send_messages=True, can_send_media_messages=True, can_send_other_messages=True, can_add_web_page_previews=True)
             bot.send_message(target_id, "🌟 <b>تم العفو عنك وإلغاء الإيقاف المؤقت في المجموعة!</b>\n\nنرجو منك الالتزام بقوانين المجموعة وعدم تكرار المخالفة. نورتنا من جديد! 🤝")
             bot.answer_callback_query(call.id, "✅ تم رفع الإيقاف المؤقت بنجاح.")
-            bot.edit_message_reply_markup(call.message.chat.id, call.message.message_id, reply_markup=None)
         except Exception as e: bot.answer_callback_query(call.id, f"❌ خطأ: {e}", show_alert=True)
             
     elif action == 'ban':
@@ -166,7 +166,6 @@ def handle_moderation_actions(call):
             markup = InlineKeyboardMarkup().add(InlineKeyboardButton("💬 التواصل مع الإدارة", url="https://t.me/bdallhshay7"))
             bot.send_message(target_id, f"🚫 <b>عذراً، تم حظر حسابك نهائياً من المتجر والمجموعة.</b>\n\nلقد تم اتخاذ هذا القرار الإداري بسبب مخالفة الشروط والتعليمات.\nللتواصل مع الإدارة لطلب رفع الحظر 👇", reply_markup=markup)
             bot.answer_callback_query(call.id, "✅ تم تأكيد الحظر النهائي للمستخدم في البوت والمجموعة.")
-            bot.edit_message_reply_markup(call.message.chat.id, call.message.message_id, reply_markup=None)
         except Exception as e: bot.answer_callback_query(call.id, f"❌ خطأ: {e}", show_alert=True)
 
 @bot.callback_query_handler(func=lambda call: call.data.startswith('reply_'))
@@ -185,7 +184,7 @@ def advanced_group_moderation(message):
     user_id = message.from_user.id
     if str(user_id) == str(ADMIN_ID): return
 
-    # 1. السماح لأزرار البوت بالمرور وتنفيذها فوراً (تجاوز الفلترة)
+    # السماح لأزرار البوت بالمرور (لا تخضع للفلترة بل للتنفيذ)
     if message.content_type == 'text' and message.text in [BTN_DAILY, BTN_ACCOUNT]:
         process_group_buttons(message)
         return
@@ -194,11 +193,9 @@ def advanced_group_moderation(message):
     text = message.text or message.caption or ""
     text_lower = text.lower()
 
-    # 2. حماية الوسائط (منع الملصقات، الصور، الفيديو، الخ)
     if message.content_type != 'text':
         violation_type = f"إرسال وسائط ممنوعة ({message.content_type})"
 
-    # 3. حماية الفلود والسبام السريع
     if not violation_type:
         now = time.time()
         if user_id not in user_flood_tracker: user_flood_tracker[user_id] = []
@@ -207,7 +204,6 @@ def advanced_group_moderation(message):
         if len(user_flood_tracker[user_id]) >= 4:
             violation_type = "إرسال رسائل سريعة (فلود / Flood)"
 
-    # 4. التكرار العشوائي لنفس الرسالة
     if not violation_type and text:
         if user_id in user_last_msg:
             if user_last_msg[user_id]['text'] == text_lower:
@@ -217,18 +213,15 @@ def advanced_group_moderation(message):
             else: user_last_msg[user_id] = {'text': text_lower, 'count': 1}
         else: user_last_msg[user_id] = {'text': text_lower, 'count': 1}
 
-    # 5. حماية الروابط
     if not violation_type and re.search(r'(http|https|t\.me|@\w+|\.com|\.net|\.org)', text_lower):
         violation_type = "إرسال روابط أو معرفات خارجية"
 
-    # 6. فلتر الكلمات المسيئة والإباحية (شديد الحساسية ضد التحايل)
     if not violation_type:
         normalized_text = re.sub(r'[\W_0-9]+', '', text_lower)
         bad_roots = ["سكس", "نيك", "قحب", "شرمو", "مخنث", "ديوث", "طيز", "زبي", "كسك", "سنابي", "تعارف", "sex", "porn", "fuck", "nude", "ممحون", "خاص", "شواذ", "كلب", "حيوان", "زبال"]
         if any(bad in normalized_text for bad in bad_roots):
             violation_type = "ألفاظ مسيئة أو غير أخلاقية"
 
-    # 7. فلتر الرسائل العشوائية والعبثية (Gibberish)
     if not violation_type and text:
         no_space = text.replace(" ", "")
         if re.search(r'(.)\1{4,}', no_space):
@@ -238,7 +231,6 @@ def advanced_group_moderation(message):
         elif re.search(r'[bcdfghjklmnpqrstvwxyzBCDFGHJKLMNPQRSTVWXYZ]{5,}', text):
             violation_type = "رسالة عشوائية (أحرف مبهمة)"
 
-    # تنفيذ العقوبة إذا تم اكتشاف مخالفة
     if violation_type:
         try: bot.delete_message(message.chat.id, message.message_id)
         except: pass
@@ -265,7 +257,7 @@ def advanced_group_moderation(message):
             try: bot.send_message(ADMIN_ID, admin_alert, reply_markup=markup)
             except: pass
 
-# === وظيفة تنفيذ الأزرار داخل المجموعة (مع الحذف المزدوج الدقيق) ===
+# === تنفيذ الأزرار داخل المجموعة ===
 def process_group_buttons(message):
     user_id = message.from_user.id
     user = users_collection.find_one({"user_id": user_id})
@@ -304,7 +296,6 @@ def process_group_buttons(message):
         resp = bot.reply_to(message, account_msg, parse_mode="HTML")
         threading.Thread(target=delayed_delete, args=(message.chat.id, message.message_id, resp.message_id, 2.5)).start()
 
-
 # --- معالجة النصوص (العملاء في الخاص والإدارة) ---
 @bot.message_handler(func=lambda message: message.chat.type == 'private')
 def handle_private_text(message):
@@ -329,6 +320,10 @@ def handle_private_text(message):
                 target_id = int(text)
                 users_collection.update_one({"user_id": target_id}, {"$set": {"is_banned": False, "warning_count": 0}})
                 bot.send_message(user_id, f"✅ تم فك الحظر عن {target_id}", reply_markup=admin_keyboard())
+                try: bot.unban_chat_member(GROUP_USERNAME, target_id, only_if_banned=True)
+                except: pass
+                try: bot.send_message(target_id, "🎉 <b>أهلاً بعودتك!</b>\n\nيسعدنا إخبارك بأنه تم رفع الحظر عن حسابك بنجاح. يمكنك الآن العودة للاستمتاع بخدمات متجرنا والتفاعل في مجموعتنا. ✨\n\nنرجو منك الالتزام بالقوانين لضمان تجربة رائعة للجميع. نورتنا! 🤝", parse_mode="HTML")
+                except: pass
             elif action == 'add_points':
                 parts = text.split()
                 target_id = int(parts[0])
@@ -403,13 +398,6 @@ def handle_private_text(message):
                     u_banned = "نعم 🚫" if target_user.get("is_banned", False) else "لا ✅"
                     bot.send_message(user_id, f"🔍 <b>نتيجة الاستعلام:</b>\n\n👤 <b>الاسم:</b> {u_name}\n🆔 <b>الآيدي:</b> <code>{target_id}</code>\n⭐ <b>الرصيد:</b> {u_pts} نقطة\n🤝 <b>المدعوين:</b> {u_invites} أشخاص\n🔒 <b>محظور؟</b> {u_banned}", reply_markup=admin_keyboard())
                 else: bot.send_message(user_id, "❌ لم يتم العثور على هذا المستخدم في قاعدة البيانات.", reply_markup=admin_keyboard())
-            elif action == 'broadcast':
-                users = users_collection.find({})
-                count = 0
-                for u in users:
-                    try: bot.send_message(u['user_id'], text); count += 1
-                    except: pass
-                bot.send_message(user_id, f"✅ تمت الإذاعة بنجاح لـ {count} مستخدم.", reply_markup=admin_keyboard())
         except Exception as e:
             bot.send_message(user_id, f"❌ حدث خطأ، يرجى التحقق من المدخلات.\nالخطأ: {e}")
         del admin_states[user_id]
@@ -488,6 +476,7 @@ def handle_private_text(message):
     bot_settings = get_settings()
     ref_bonus = bot_settings.get("referral_bonus", 2)
 
+    # تفاعلات الخاص فقط 
     if text == BTN_DAILY:
         today_str = datetime.datetime.now().strftime("%Y-%m-%d")
         yesterday_str = (datetime.datetime.now() - datetime.timedelta(days=1)).strftime("%Y-%m-%d")
@@ -544,7 +533,7 @@ def handle_private_text(message):
         bot.send_message(user_id, "⏳ سيتم إضافة المحتوى قريباً...")
 
 # ==========================================
-# --- نظام API لاستقبال بيانات النماذج ---
+# --- نظام API لاستقبال بيانات النماذج (نفس السابق) ---
 # ==========================================
 @app.route('/submit_form', methods=['POST'])
 def submit_form():
@@ -582,7 +571,8 @@ def getMessage():
         update = telebot.types.Update.de_json(json_string)
         bot.process_new_updates([update])
         return "!", 200
-    except: return "!", 500
+    except:
+        return "!", 500
 
 @app.route('/setup')
 def setup_webhook():
