@@ -29,7 +29,13 @@ settings_collection = db['settings']
 def get_settings():
     s = settings_collection.find_one({"_id": "bot_settings"})
     if not s:
-        s = {"_id": "bot_settings", "price_yt": 15, "price_spotify": 15, "price_gemini": 15, "referral_bonus": 2}
+        s = {
+            "_id": "bot_settings", 
+            "price_yt": 15, 
+            "price_spotify": 15, 
+            "price_gemini": 15, 
+            "referral_bonus": 2
+        }
         settings_collection.insert_one(s)
     return s
 
@@ -79,12 +85,19 @@ def admin_keyboard():
     return markup
 
 def check_user_subscription(user_id):
-    if str(user_id) == str(ADMIN_ID): return True
-    try:
-        if bot.get_chat_member(CHANNEL_USERNAME, user_id).status in ['left', 'kicked']: return False
-        if bot.get_chat_member(GROUP_USERNAME, user_id).status in ['left', 'kicked']: return False
+    if str(user_id) == str(ADMIN_ID):
         return True
-    except: return True
+    try:
+        channel_member = bot.get_chat_member(CHANNEL_USERNAME, user_id)
+        if channel_member.status in ['left', 'kicked']:
+            return False
+        group_member = bot.get_chat_member(GROUP_USERNAME, user_id)
+        if group_member.status in ['left', 'kicked']:
+            return False
+        return True
+    except Exception as e:
+        print(f"Error checking sub: {e}")
+        return True
 
 def subscription_required_markup():
     markup = InlineKeyboardMarkup()
@@ -93,7 +106,7 @@ def subscription_required_markup():
     markup.add(InlineKeyboardButton("✅ تحقق من الاشتراك", callback_data="check_subscription"))
     return markup
 
-# وظيفة حذف الرسائل المزدوجة (الطلب والرد) بدقة
+# وظيفة حذف الرسائل المزدوجة (الطلب والرد)
 def delayed_delete(chat_id, user_msg_id, bot_msg_id, delay=2.5):
     time.sleep(delay)
     try: bot.delete_message(chat_id, user_msg_id)
@@ -105,11 +118,15 @@ def delayed_delete(chat_id, user_msg_id, bot_msg_id, delay=2.5):
 def open_admin_panel(message):
     if str(message.from_user.id) == str(ADMIN_ID):
         bot.send_message(message.chat.id, "🛠️ <b>مرحباً بك في لوحة تحكم الإدارة:</b>\nاختر الإجراء الذي تريده من الأزرار بالأسفل 👇", reply_markup=admin_keyboard())
-    else: bot.send_message(message.chat.id, "⛔️ عذراً، لا تملك صلاحية الدخول.")
+    else:
+        bot.send_message(message.chat.id, "⛔️ عذراً، لا تملك صلاحية الدخول.")
 
 @bot.message_handler(commands=['start'])
 def send_welcome(message):
     user_id = message.from_user.id
+    first_name = message.from_user.first_name
+    args = message.text.split()
+    
     user = users_collection.find_one({"user_id": user_id})
 
     if user and user.get("is_banned", False):
@@ -117,56 +134,109 @@ def send_welcome(message):
         return
 
     if not check_user_subscription(user_id):
-        bot.send_message(user_id, "⚠️ <b>عذراً، يجب عليك الانضمام لقناة ومجموعة المتجر أولاً لتتمكن من استخدام البوت!</b>", reply_markup=subscription_required_markup())
+        bot.send_message(
+            user_id, 
+            "⚠️ <b>عذراً، يجب عليك الانضمام لقناة ومجموعة المتجر أولاً لتتمكن من استخدام البوت الاستفادة من الخدمات والخصومات!</b>\n\nبعد الانضمام، اضغط على زر <b>(تحقق من الاشتراك ✅)</b> بالأسفل 👇", 
+            reply_markup=subscription_required_markup()
+        )
         return
 
     now_str = datetime.datetime.now().strftime("%Y-%m-%d %H:%M")
     if not user:
-        users_collection.insert_one({"user_id": user_id, "first_name": message.from_user.first_name, "points": 0, "invites": 0, "last_collected_date": None, "streak": 0, "is_banned": False, "join_date": now_str, "last_active": datetime.datetime.now(), "warning_count": 0})
-        args = message.text.split()
+        users_collection.insert_one({
+            "user_id": user_id,
+            "first_name": first_name,
+            "points": 0,
+            "invites": 0,
+            "last_collected_date": None,
+            "streak": 0,
+            "is_banned": False,
+            "is_muted": False, # حقل جديد للكتم
+            "mute_until": None, # حقل جديد لوقت انتهاء الكتم
+            "join_date": now_str,
+            "last_active": datetime.datetime.now(),
+            "warning_count": 0
+        })
         if len(args) > 1 and args[1].isdigit():
-            ref_id = int(args[1])
-            if ref_id != user_id:
-                rb = get_settings().get("referral_bonus", 2)
-                users_collection.update_one({"user_id": ref_id}, {"$inc": {"points": rb, "invites": 1}})
-                try: bot.send_message(ref_id, f"🎉 ياي! قام صديق بالتسجيل عبر رابطك! تمت إضافة ({rb}) نقطة لرصيدك بنجاح.")
+            referrer_id = int(args[1])
+            if referrer_id != user_id:
+                ref_bonus = get_settings().get("referral_bonus", 2)
+                users_collection.update_one(
+                    {"user_id": referrer_id},
+                    {"$inc": {"points": ref_bonus, "invites": 1}}
+                )
+                try: bot.send_message(referrer_id, f"🎉 ياي! قام صديق بالتسجيل عبر رابطك! تمت إضافة ({ref_bonus}) نقطة لرصيدك بنجاح.")
                 except: pass
     else:
         users_collection.update_one({"user_id": user_id}, {"$set": {"last_active": datetime.datetime.now()}})
 
+    welcome_text = f"أهلاً بك يا <b>{first_name}</b> في متجرنا الإلكتروني <b>بوابة الاشتراكات</b>! 🤖✨\n\nتفضل باختيار ما تريد من القائمة التفاعلية بالأسفل 👇"
     kb = group_keyboard() if message.chat.type in ['group', 'supergroup'] else main_keyboard()
-    bot.send_message(message.chat.id, f"أهلاً بك يا <b>{message.from_user.first_name}</b> في متجرنا الإلكتروني <b>بوابة الاشتراكات</b>! 🤖✨\n\nتفضل باختيار ما تريد من القائمة التفاعلية بالأسفل 👇", reply_markup=kb)
+    bot.send_message(message.chat.id, welcome_text, reply_markup=kb)
 
 @bot.callback_query_handler(func=lambda call: call.data == "check_subscription")
 def verify_subscription(call):
-    if check_user_subscription(call.from_user.id):
+    user_id = call.from_user.id
+    if check_user_subscription(user_id):
         bot.answer_callback_query(call.id, "✅ تم التحقق بنجاح! أهلاً بك.")
-        try: bot.delete_message(call.from_user.id, call.message.message_id)
+        try: bot.delete_message(user_id, call.message.message_id)
         except: pass
         send_welcome(call.message)
-    else: bot.answer_callback_query(call.id, "❌ لم تقم بالانضمام للقناة أو المجموعة بعد!", show_alert=True)
+    else:
+        bot.answer_callback_query(call.id, "❌ لم تقم بالانضمام للقناة أو المجموعة بعد!", show_alert=True)
 
-# أزرار الإدارة التفاعلية (تبقى ظاهرة دائماً)
-@bot.callback_query_handler(func=lambda call: call.data.startswith('unban_temp_') or call.data.startswith('ban_perm_'))
+# إدارة الأزرار الخاصة بالمخالفين في المجموعة
+@bot.callback_query_handler(func=lambda call: call.data.startswith('unban_temp_') or call.data.startswith('ban_perm_') or call.data.startswith('extend_mute_'))
 def handle_moderation_actions(call):
-    if str(call.from_user.id) != str(ADMIN_ID): return bot.answer_callback_query(call.id, "⛔️ للآدمن فقط!", show_alert=True)
-    parts = call.data.split('_'); action = parts[0]; target_id = int(parts[2])
+    if str(call.from_user.id) != str(ADMIN_ID):
+        bot.answer_callback_query(call.id, "⛔️ للآدمن فقط!", show_alert=True)
+        return
     
-    if action == 'unban':
+    parts = call.data.split('_')
+    action = parts[0]
+    
+    if action == 'unban' and len(parts) == 3:
+        target_id = int(parts[2])
         try:
-            bot.restrict_chat_member(GROUP_USERNAME, target_id, can_send_messages=True, can_send_media_messages=True, can_send_other_messages=True, can_add_web_page_previews=True)
+            bot.restrict_chat_member(
+                GROUP_USERNAME, target_id, 
+                can_send_messages=True, can_send_media_messages=True, 
+                can_send_other_messages=True, can_add_web_page_previews=True
+            )
+            users_collection.update_one({"user_id": target_id}, {"$set": {"is_muted": False, "mute_until": None, "is_banned": False}})
             bot.send_message(target_id, "🌟 <b>تم العفو عنك وإلغاء الإيقاف المؤقت في المجموعة!</b>\n\nنرجو منك الالتزام بقوانين المجموعة وعدم تكرار المخالفة. نورتنا من جديد! 🤝")
-            bot.answer_callback_query(call.id, "✅ تم رفع الإيقاف المؤقت بنجاح.")
-        except Exception as e: bot.answer_callback_query(call.id, f"❌ خطأ: {e}", show_alert=True)
+            bot.answer_callback_query(call.id, "✅ تم رفع جميع القيود والكتم عن المستخدم في المجموعة.")
+            bot.edit_message_reply_markup(call.message.chat.id, call.message.message_id, reply_markup=None)
+        except Exception as e:
+            bot.answer_callback_query(call.id, f"❌ حدث خطأ: {e}", show_alert=True)
             
-    elif action == 'ban':
+    elif action == 'extend' and parts[1] == 'mute':
+        target_id = int(parts[3])
+        try:
+             # تمديد الكتم لساعتين إضافيتين
+             until_date = int(time.time()) + 7200
+             bot.restrict_chat_member(GROUP_USERNAME, target_id, until_date=until_date, can_send_messages=False)
+             bot.answer_callback_query(call.id, "✅ تم تمديد كتم المستخدم لساعتين إضافيتين.")
+        except Exception as e:
+             bot.answer_callback_query(call.id, f"❌ حدث خطأ: {e}", show_alert=True)
+
+    elif action == 'ban' and len(parts) == 3:
+        target_id = int(parts[2])
         users_collection.update_one({"user_id": target_id}, {"$set": {"is_banned": True}})
         try:
             bot.ban_chat_member(GROUP_USERNAME, target_id)
-            markup = InlineKeyboardMarkup().add(InlineKeyboardButton("💬 التواصل مع الإدارة", url="https://t.me/bdallhshay7"))
-            bot.send_message(target_id, f"🚫 <b>عذراً، تم حظر حسابك نهائياً من المتجر والمجموعة.</b>\n\nلقد تم اتخاذ هذا القرار الإداري بسبب مخالفة الشروط والتعليمات.\nللتواصل مع الإدارة لطلب رفع الحظر 👇", reply_markup=markup)
+            ban_msg = (
+                f"🚫 <b>عذراً، تم حظر حسابك نهائياً من المتجر والمجموعة.</b>\n\n"
+                f"لقد تم اتخاذ هذا القرار الإداري بسبب مخالفة الشروط والتعليمات.\n"
+                f"للتواصل مع الإدارة لطلب رفع الحظر 👇"
+            )
+            markup = InlineKeyboardMarkup()
+            markup.add(InlineKeyboardButton("💬 التواصل مع الإدارة", url="https://t.me/bdallhshay7"))
+            bot.send_message(target_id, ban_msg, reply_markup=markup)
             bot.answer_callback_query(call.id, "✅ تم تأكيد الحظر النهائي للمستخدم في البوت والمجموعة.")
-        except Exception as e: bot.answer_callback_query(call.id, f"❌ خطأ: {e}", show_alert=True)
+            bot.edit_message_reply_markup(call.message.chat.id, call.message.message_id, reply_markup=None)
+        except Exception as e:
+            bot.answer_callback_query(call.id, f"❌ حدث خطأ: {e}", show_alert=True)
 
 @bot.callback_query_handler(func=lambda call: call.data.startswith('reply_'))
 def handle_reply_button(call):
@@ -182,9 +252,10 @@ def handle_reply_button(call):
 @bot.message_handler(func=lambda message: message.chat.type in ['group', 'supergroup'], content_types=['text', 'photo', 'video', 'document', 'audio', 'voice', 'sticker', 'animation'])
 def advanced_group_moderation(message):
     user_id = message.from_user.id
-    if str(user_id) == str(ADMIN_ID): return
+    if str(user_id) == str(ADMIN_ID):
+        return
 
-    # السماح لأزرار البوت بالمرور (لا تخضع للفلترة بل للتنفيذ)
+    # 1. السماح لأزرار البوت بالمرور وتنفيذها فوراً (تجاوز الفلترة)
     if message.content_type == 'text' and message.text in [BTN_DAILY, BTN_ACCOUNT]:
         process_group_buttons(message)
         return
@@ -193,81 +264,118 @@ def advanced_group_moderation(message):
     text = message.text or message.caption or ""
     text_lower = text.lower()
 
+    # 2. حماية الوسائط
     if message.content_type != 'text':
         violation_type = f"إرسال وسائط ممنوعة ({message.content_type})"
 
+    # 3. حماية الفلود والسبام السريع
     if not violation_type:
         now = time.time()
-        if user_id not in user_flood_tracker: user_flood_tracker[user_id] = []
+        if user_id not in user_flood_tracker:
+            user_flood_tracker[user_id] = []
         user_flood_tracker[user_id] = [t for t in user_flood_tracker[user_id] if now - t < 5]
         user_flood_tracker[user_id].append(now)
+        
         if len(user_flood_tracker[user_id]) >= 4:
             violation_type = "إرسال رسائل سريعة (فلود / Flood)"
 
+    # 4. التكرار العشوائي لنفس الرسالة
     if not violation_type and text:
         if user_id in user_last_msg:
             if user_last_msg[user_id]['text'] == text_lower:
                 user_last_msg[user_id]['count'] += 1
                 if user_last_msg[user_id]['count'] >= 3:
                     violation_type = "تكرار نفس الرسالة (سبام / Spam)"
-            else: user_last_msg[user_id] = {'text': text_lower, 'count': 1}
-        else: user_last_msg[user_id] = {'text': text_lower, 'count': 1}
+            else:
+                user_last_msg[user_id] = {'text': text_lower, 'count': 1}
+        else:
+            user_last_msg[user_id] = {'text': text_lower, 'count': 1}
 
+    # 5. حماية الروابط
     if not violation_type and re.search(r'(http|https|t\.me|@\w+|\.com|\.net|\.org)', text_lower):
         violation_type = "إرسال روابط أو معرفات خارجية"
 
+    # 6. فلتر الكلمات المسيئة والإباحية
     if not violation_type:
         normalized_text = re.sub(r'[\W_0-9]+', '', text_lower)
-        bad_roots = ["سكس", "نيك", "قحب", "شرمو", "مخنث", "ديوث", "طيز", "زبي", "كسك", "سنابي", "تعارف", "sex", "porn", "fuck", "nude", "ممحون", "خاص", "شواذ", "كلب", "حيوان", "زبال"]
+        bad_roots = [
+            "سكس", "نيك", "قحب", "شرمو", "مخنث", "ديوث", "طيز", "زبي", "كسك", 
+            "سنابي", "تعارف", "sex", "porn", "fuck", "nude", "ممحون", "خاص", 
+            "شواذ", "كلب", "حيوان", "زبال"
+        ]
         if any(bad in normalized_text for bad in bad_roots):
             violation_type = "ألفاظ مسيئة أو غير أخلاقية"
 
+    # 7. فلتر الرسائل العشوائية والعبثية (Gibberish)
     if not violation_type and text:
         no_space = text.replace(" ", "")
-        if re.search(r'(.)\1{4,}', no_space):
+        
+        if re.search(r'(.)\1{5,}', no_space):
             violation_type = "رسالة مزعجة (تكرار حروف عبثي)"
+            
         elif any(len(word) > 15 and re.search(r'[\u0600-\u06FF]', word) for word in text.split()):
             violation_type = "رسالة عشوائية (أحرف متلاصقة بلا معنى)"
-        elif re.search(r'[bcdfghjklmnpqrstvwxyzBCDFGHJKLMNPQRSTVWXYZ]{5,}', text):
+            
+        elif re.search(r'[bcdfghjklmnpqrstvwxyzBCDFGHJKLMNPQRSTVWXYZ]{6,}', text):
             violation_type = "رسالة عشوائية (أحرف مبهمة)"
 
+    # تنفيذ العقوبة
     if violation_type:
-        try: bot.delete_message(message.chat.id, message.message_id)
+        try:
+            bot.delete_message(message.chat.id, message.message_id)
         except: pass
         
-        users_collection.update_one({"user_id": user_id}, {"$inc": {"warning_count": 1}})
-        try: bot.restrict_chat_member(message.chat.id, user_id, until_date=int(time.time()) + 7200, can_send_messages=False)
+        # تسجيل الكتم في الداتا بيز
+        until_date = int(time.time()) + 7200
+        users_collection.update_one(
+             {"user_id": user_id}, 
+             {"$inc": {"warning_count": 1}, "$set": {"is_muted": True, "mute_until": until_date}}
+        )
+
+        try:
+            bot.restrict_chat_member(message.chat.id, user_id, until_date=until_date, can_send_messages=False)
         except: pass
 
+        time_str = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        content_display = text if message.content_type == 'text' else f"[{message.content_type}]"
+
         if ADMIN_ID:
-            content_display = text if message.content_type == 'text' else f"[{message.content_type}]"
             admin_alert = (
                 f"🚨 <b>اكتشاف مخالفة وتم الكتم!</b>\n\n"
                 f"👤 الاسم: {message.from_user.first_name}\n"
                 f"🆔 الآيدي: <code>{user_id}</code>\n"
                 f"📌 نوع المخالفة: <b>{violation_type}</b>\n"
                 f"💬 المحتوى المكتشف:\n<code>{content_display}</code>\n"
-                f"⏰ الوقت: {datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n\n"
+                f"⏰ الوقت: {time_str}\n\n"
                 f"⚡️ <i>الإجراء: تم الحذف والكتم لمدة ساعتين في المجموعة (دون حظره من البوت).</i>"
             )
-            markup = InlineKeyboardMarkup().row(
+            markup = InlineKeyboardMarkup()
+            markup.row(
                 InlineKeyboardButton("🔓 رفع الكتم", callback_data=f"unban_temp_{user_id}"),
                 InlineKeyboardButton("⛔ حظر نهائي", callback_data=f"ban_perm_{user_id}")
             )
             try: bot.send_message(ADMIN_ID, admin_alert, reply_markup=markup)
             except: pass
 
-# === تنفيذ الأزرار داخل المجموعة ===
+
+# === وظيفة تنفيذ الأزرار داخل المجموعة ===
 def process_group_buttons(message):
     user_id = message.from_user.id
     user = users_collection.find_one({"user_id": user_id})
+    text = message.text
 
     if not user:
         resp = bot.reply_to(message, "⚠️ الرجاء التسجيل في البوت أولاً عبر الخاص.")
         threading.Thread(target=delayed_delete, args=(message.chat.id, message.message_id, resp.message_id, 2.5)).start()
         return
 
-    if message.text == BTN_DAILY:
+    # التاكد من انه ليس مسجلا كمكتوم في النظام، وإن كان، نمنعه من الأزرار أيضا (إضافي للحماية)
+    if user.get("is_muted", False) and user.get("mute_until", 0) and user.get("mute_until", 0) > time.time():
+        resp = bot.reply_to(message, "⚠️ عذرا، أنت معاقب ومكتوم مؤقتا في المجموعة.")
+        threading.Thread(target=delayed_delete, args=(message.chat.id, message.message_id, resp.message_id, 2.5)).start()
+        return
+
+    if text == BTN_DAILY:
         today_str = datetime.datetime.now().strftime("%Y-%m-%d")
         yesterday_str = (datetime.datetime.now() - datetime.timedelta(days=1)).strftime("%Y-%m-%d")
         last_date = user.get("last_collected_date")
@@ -285,16 +393,26 @@ def process_group_buttons(message):
         new_points = user.get("points", 0) + pts_added
         users_collection.update_one({"user_id": user_id}, {"$inc": {"points": pts_added}, "$set": {"last_collected_date": today_str, "streak": streak}})
         
-        daily_msg = f"🎉 <b>تسجيل حضور ناجح!</b>\n═══════════════════════\n\n💎 +{pts_added} {'عملة' if is_seventh_day else 'وحدة نقدية'} |\n💰 الرصيد: {new_points} {'عملة' if is_seventh_day else 'وحدة نقدية'} |\n📅 سلسلة الأيام: {streak} {'أيام' if is_seventh_day else 'يوم'}\n═══════════════════════"
-        if is_seventh_day: daily_msg += "\n\n🔥 <b>سلسلة 7 أيام!</b>\n\nلقد حصلت على 2 عملة بدلاً من 1 عملة!"
+        daily_msg = (
+            f"🎉 <b>تسجيل حضور ناجح!</b>\n"
+            f"═══════════════════════\n\n"
+            f"💎 +{pts_added} {'عملة' if is_seventh_day else 'وحدة نقدية'} |\n"
+            f"💰 الرصيد: {new_points} {'عملة' if is_seventh_day else 'وحدة نقدية'} |\n"
+            f"📅 سلسلة الأيام: {streak} {'أيام' if is_seventh_day else 'يوم'}\n"
+            f"═══════════════════════"
+        )
+        if is_seventh_day:
+            daily_msg += "\n\n🔥 <b>سلسلة 7 أيام!</b>\n\nلقد حصلت على 2 عملة بدلاً من 1 عملة!"
 
         resp = bot.reply_to(message, daily_msg, parse_mode="HTML")
         threading.Thread(target=delayed_delete, args=(message.chat.id, message.message_id, resp.message_id, 2.5)).start()
 
-    elif message.text == BTN_ACCOUNT:
-        account_msg = f"👤 <b>الاسم:</b> {user.get('first_name', 'غير معروف')}\n🆔 <b>رقم الحساب:</b> <code>{user_id}</code>\n⭐ <b>الرصيد:</b> {user.get('points', 0)} نقطة\n🤝 <b>المدعوين:</b> {user.get('invites', 0)}"
+    elif text == BTN_ACCOUNT:
+        points = user.get("points", 0)
+        account_msg = f"👤 <b>الاسم:</b> {user.get('first_name', 'غير معروف')}\n🆔 <b>رقم الحساب:</b> <code>{user_id}</code>\n⭐ <b>الرصيد:</b> {points} نقطة\n🤝 <b>المدعوين:</b> {user.get('invites', 0)}"
         resp = bot.reply_to(message, account_msg, parse_mode="HTML")
         threading.Thread(target=delayed_delete, args=(message.chat.id, message.message_id, resp.message_id, 2.5)).start()
+
 
 # --- معالجة النصوص (العملاء في الخاص والإدارة) ---
 @bot.message_handler(func=lambda message: message.chat.type == 'private')
@@ -318,11 +436,11 @@ def handle_private_text(message):
                 bot.send_message(user_id, f"✅ تم حظر المستخدم {target_id}", reply_markup=admin_keyboard())
             elif action == 'unban_user':
                 target_id = int(text)
-                users_collection.update_one({"user_id": target_id}, {"$set": {"is_banned": False, "warning_count": 0}})
+                users_collection.update_one({"user_id": target_id}, {"$set": {"is_banned": False, "is_muted": False, "mute_until": None, "warning_count": 0}})
                 bot.send_message(user_id, f"✅ تم فك الحظر عن {target_id}", reply_markup=admin_keyboard())
                 try: bot.unban_chat_member(GROUP_USERNAME, target_id, only_if_banned=True)
                 except: pass
-                try: bot.send_message(target_id, "🎉 <b>أهلاً بعودتك!</b>\n\nيسعدنا إخبارك بأنه تم رفع الحظر عن حسابك بنجاح. يمكنك الآن العودة للاستمتاع بخدمات متجرنا والتفاعل في مجموعتنا. ✨\n\nنرجو منك الالتزام بالقوانين لضمان تجربة رائعة للجميع. نورتنا! 🤝", parse_mode="HTML")
+                try: bot.send_message(target_id, "🎉 <b>أهلاً بعودتك!</b>\n\nيسعدنا إخبارك بأنه تم رفع الحظر والقيود عن حسابك بنجاح. يمكنك الآن العودة للاستمتاع بخدمات متجرنا والتفاعل في مجموعتنا. ✨\n\nنرجو منك الالتزام بالقوانين لضمان تجربة رائعة للجميع. نورتنا! 🤝", parse_mode="HTML")
                 except: pass
             elif action == 'add_points':
                 parts = text.split()
@@ -395,8 +513,15 @@ def handle_private_text(message):
                     u_name = target_user.get("first_name", "غير معروف")
                     u_pts = target_user.get("points", 0)
                     u_invites = target_user.get("invites", 0)
-                    u_banned = "نعم 🚫" if target_user.get("is_banned", False) else "لا ✅"
-                    bot.send_message(user_id, f"🔍 <b>نتيجة الاستعلام:</b>\n\n👤 <b>الاسم:</b> {u_name}\n🆔 <b>الآيدي:</b> <code>{target_id}</code>\n⭐ <b>الرصيد:</b> {u_pts} نقطة\n🤝 <b>المدعوين:</b> {u_invites} أشخاص\n🔒 <b>محظور؟</b> {u_banned}", reply_markup=admin_keyboard())
+                    u_banned = target_user.get("is_banned", False)
+                    u_muted = target_user.get("is_muted", False)
+                    
+                    status_str = []
+                    if u_banned: status_str.append("محظور 🚫")
+                    elif u_muted: status_str.append("مكتوم 🔇")
+                    else: status_str.append("نشط ✅")
+                    
+                    bot.send_message(user_id, f"🔍 <b>نتيجة الاستعلام:</b>\n\n👤 <b>الاسم:</b> {u_name}\n🆔 <b>الآيدي:</b> <code>{target_id}</code>\n⭐ <b>الرصيد:</b> {u_pts} نقطة\n🤝 <b>المدعوين:</b> {u_invites} أشخاص\nحالة الحساب: {', '.join(status_str)}", reply_markup=admin_keyboard())
                 else: bot.send_message(user_id, "❌ لم يتم العثور على هذا المستخدم في قاعدة البيانات.", reply_markup=admin_keyboard())
         except Exception as e:
             bot.send_message(user_id, f"❌ حدث خطأ، يرجى التحقق من المدخلات.\nالخطأ: {e}")
@@ -407,7 +532,7 @@ def handle_private_text(message):
         if text == "🚫 حظر مستخدم":
             admin_states[user_id] = {'action': 'ban_user'}; bot.send_message(user_id, "أرسل الآن ID المستخدم ليتم حظره:\n(أرسل /cancel للإلغاء)"); return
         elif text == "✅ فك حظر":
-            admin_states[user_id] = {'action': 'unban_user'}; bot.send_message(user_id, "أرسل الآن ID المستخدم لفك حظره:\n(أرسل /cancel للإلغاء)"); return
+            admin_states[user_id] = {'action': 'unban_user'}; bot.send_message(user_id, "أرسل الآن ID المستخدم لفك حظره ورفع الكتم:\n(أرسل /cancel للإلغاء)"); return
         elif text == "➕ إضافة نقاط":
             admin_states[user_id] = {'action': 'add_points'}; bot.send_message(user_id, "أرسل ID العميل ثم مسافة ثم عدد النقاط.\nمثال: <code>123456789 50</code>", parse_mode="HTML"); return
         elif text == "➖ سحب نقاط":
@@ -448,15 +573,18 @@ def handle_private_text(message):
             if total > 30: msg += f"\n...وغيرهم {total - 30} مستخدم."
             bot.send_message(user_id, msg, reply_markup=admin_keyboard())
             return
+            
         elif text == "🚫 قائمة المحظورين":
-            banned_users = list(users_collection.find({"is_banned": True}))
+            # دمج المحظورين والمكتومين في نفس القائمة لسهولة إدارتهم
+            banned_users = list(users_collection.find({"$or": [{"is_banned": True}, {"is_muted": True}]}))
             total_banned = len(banned_users)
             if total_banned == 0:
-                bot.send_message(user_id, "✅ لا يوجد أي مستخدم محظور حالياً.", reply_markup=admin_keyboard())
+                bot.send_message(user_id, "✅ لا يوجد أي مستخدم محظور أو مكتوم حالياً.", reply_markup=admin_keyboard())
             else:
-                msg = f"🚫 <b>قائمة المحظورين ({total_banned}):</b>\n\n"
+                msg = f"🚫 <b>قائمة المحظورين والمكتومين ({total_banned}):</b>\n\n"
                 for u in banned_users:
-                    msg += f"• {u.get('first_name', 'مستخدم')} | <code>{u.get('user_id')}</code>\n"
+                    status = "محظور 🚫" if u.get("is_banned") else "مكتوم 🔇"
+                    msg += f"• {status} | {u.get('first_name', 'مستخدم')} | <code>{u.get('user_id')}</code>\n"
                 bot.send_message(user_id, msg, reply_markup=admin_keyboard())
             return
 
