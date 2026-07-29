@@ -6,6 +6,7 @@ from pymongo import MongoClient
 import datetime
 import threading
 import time
+import re
 
 # --- الإعدادات الأساسية ---
 BOT_TOKEN = os.environ.get('BOT_TOKEN', '').strip()
@@ -101,7 +102,7 @@ def subscription_required_markup():
     markup.add(InlineKeyboardButton("✅ تحقق من الاشتراك", callback_data="check_subscription"))
     return markup
 
-def delayed_delete(chat_id, message_id, delay=4):
+def delayed_delete(chat_id, message_id, delay=3):
     time.sleep(delay)
     try:
         bot.delete_message(chat_id, message_id)
@@ -177,7 +178,7 @@ def verify_subscription(call):
     else:
         bot.answer_callback_query(call.id, "❌ لم تقم بالانضمام للقناة أو المجموعة بعد!", show_alert=True)
 
-# --- معالجة أزرار الأدمين الخاصة بالمزعجين (رفع الحظر أو تأكيده) ---
+# --- أزرار تحكم الأدمن بالمخالفين ---
 @bot.callback_query_handler(func=lambda call: call.data.startswith('unban_temp_') or call.data.startswith('ban_perm_'))
 def handle_moderation_actions(call):
     if str(call.from_user.id) != str(ADMIN_ID):
@@ -185,18 +186,15 @@ def handle_moderation_actions(call):
         return
     
     parts = call.data.split('_')
-    action = parts[0] # unban أو ban
+    action = parts[0]
     target_id = int(parts[2])
     
     if action == 'unban':
-        # رفع التقييد المؤقت
         try:
             bot.restrict_chat_member(
                 GROUP_USERNAME, target_id, 
-                can_send_messages=True, 
-                can_send_media_messages=True, 
-                can_send_other_messages=True, 
-                can_add_web_page_previews=True
+                can_send_messages=True, can_send_media_messages=True, 
+                can_send_other_messages=True, can_add_web_page_previews=True
             )
             bot.send_message(target_id, "🌟 <b>تم العفو عنك وإلغاء الإيقاف المؤقت!</b>\n\nنرجو منك الالتزام بقوانين المجموعة وعدم تكرار المخالفة حتى لا تعرض نفسك للحظر النهائي. نورتنا من جديد! 🤝")
             bot.answer_callback_query(call.id, "✅ تم رفع الإيقاف المؤقت وإرسال رسالة محفزة للعميل.")
@@ -205,14 +203,13 @@ def handle_moderation_actions(call):
             bot.answer_callback_query(call.id, f"❌ حدث خطأ: {e}", show_alert=True)
             
     elif action == 'ban':
-        # تأكيد الحظر النهائي
         users_collection.update_one({"user_id": target_id}, {"$set": {"is_banned": True}})
         try:
             bot.ban_chat_member(GROUP_USERNAME, target_id)
             ban_msg = (
                 f"🚫 <b>عذراً، تم حظر حسابك نهائياً من المتجر والمجموعة.</b>\n\n"
                 f"لقد تم اتخاذ هذا القرار الإداري بسبب مخالفة الشروط والتعليمات.\n"
-                f"إذا كنت ترى أن هناك خطأ أو رغبت في التواصل مع الإدارة لطلب رفع الحظر، يمكنك مراسلتنا عبر الزر أدناه 👇"
+                f"للتواصل مع الإدارة لطلب رفع الحظر 👇"
             )
             markup = InlineKeyboardMarkup()
             markup.add(InlineKeyboardButton("💬 التواصل مع الإدارة", url="https://t.me/bdallhshay7"))
@@ -231,25 +228,38 @@ def handle_reply_button(call):
         bot.send_message(ADMIN_ID, f"✍️ <b>وضع الرد مفعل:</b>\nاكتب رسالتك الآن للعميل: <code>{target_id}</code>\n\n(لإلغاء الأمر أرسل /cancel)")
         bot.answer_callback_query(call.id)
 
-# --- نظام الفلترة والرقابة الذكية في المجموعة ---
+# --- نظام الفلترة والرقابة المتقدم داخل المجموعة ---
 @bot.message_handler(func=lambda message: message.chat.type in ['group', 'supergroup'])
 def group_moderation(message):
     user_id = message.from_user.id
     if str(user_id) == str(ADMIN_ID):
         return
 
-    text = message.text or ""
-    text_lower = text.lower()
+    text = message.text or message.caption or ""
+    text_clean = text.lower().strip()
     
-    bad_keywords = [
-        "http://", "https://", "t.me/", "@", 
+    # 1. فحص الروابط
+    has_link = ("http://" in text_clean or "https://" in text_clean or "t.me/" in text_clean or "@" in text_clean)
+    
+    # 2. فحص الكلمات المسيئة والممنوعة (مع مقاومة التحايل والمسافات)
+    bad_words = [
         "تعارف", "بنات", "سنابي", "واتساب", "رقمي", "كلمني", 
-        "اباحي", "جنس", "مخنث", "نيك", "شرموط", "سكس", "عشق", "غزل", "حبيبي", "تعال خاص"
+        "اباحي", "جنس", "مخنث", "نيك", "شرموط", "سكس", "عشق", "غزل", "حبيبي", "تعال خاص",
+        "شحن", "بيع", "تمويل"
     ]
+    # إزالة المسافات والرموز المتكررة لكشف الكلمات المتحايل عليها
+    normalized_text = re.sub(r'[\s\d\W_]+', '', text_clean)
+    is_bad_word = any(re.search(r'' + re.escape(word) + r'', normalized_text) for word in bad_words)
     
-    is_violation = any(word in text_lower for word in bad_keywords)
+    # 3. فحص السبام والرسائل العشوائية (Gibberish) مثل الحروف المتلاصقة بدون معنى (أكثر من 5 أحرف عشوائية بدون حروف علة أو متكررة بعبثية)
+    is_gibberish = False
+    if len(text_clean) > 3 and not re.search(r'[أإآؤئبةتثجحخدذرزسشصضطظعغفقكلمنهويةa-z]{2,}', text_clean):
+        is_gibberish = True
 
-    if is_violation:
+    if has_link or is_bad_word or is_gibberish:
+        violation_type = "رابط مخالق" if has_link else ("كلمة مسيئة أو محظورة" if is_bad_word else "رسالة عشوائية / سبام")
+        time_str = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        
         try:
             bot.delete_message(message.chat.id, message.message_id)
             
@@ -263,7 +273,7 @@ def group_moderation(message):
                 try:
                     markup = InlineKeyboardMarkup()
                     markup.add(InlineKeyboardButton("💬 التواصل مع الإدارة", url="https://t.me/bdallhshay7"))
-                    bot.send_message(user_id, "⛔️ <b>تم حظر حسابك نهائياً من المتجر والمجموعة بسبب تكرار المخالفات وإرسال محتوى محظور.</b>", reply_markup=markup)
+                    bot.send_message(user_id, "⛔️ <b>تم حظر حسابك نهائياً من المتجر والمجموعة بسبب تكرار المخالفات.</b>", reply_markup=markup)
                 except: pass
             else:
                 users_collection.update_one({"user_id": user_id}, {"$inc": {"warning_count": 1}})
@@ -274,17 +284,18 @@ def group_moderation(message):
                 bot.send_message(message.chat.id, f"⚠️ تنبيه: تم كتم العضو <code>{user_id}</code> لمدة ساعتين بسبب محتوى مخالف.", parse_mode="HTML")
                 
                 try:
-                    bot.send_message(user_id, f"⚠️ <b>تحذير إداري أمني:</b>\nتم إيقافك مؤقتاً في المجموعة لمدة ساعتين بسبب إرسال محتوى مخالف أو روابط.\nإذا كررت المخالفة سيتم حظرك نهائياً من المتجر.")
+                    bot.send_message(user_id, f"⚠️ <b>تحذير إداري أمني:</b>\nتم إيقافك مؤقتاً في المجموعة لمدة ساعتين بسبب ({violation_type}).\nإذا كررت المخالفة سيتم حظرك نهائياً.")
                 except: pass
                 
-                # إرسال إشعار للأدمن مع زرين لرفع أو تأكيد الحظر
                 if ADMIN_ID:
                     admin_alert = (
                         f"🚨 <b>مستخدم مزعج/مخالف جديد!</b>\n\n"
                         f"👤 الاسم: {message.from_user.first_name}\n"
                         f"🆔 الآيدي: <code>{user_id}</code>\n"
-                        f"💬 الرسالة المخالفة:\n<code>{text}</code>\n\n"
-                        f"⚡️ <i>الإجراء: تم كتمه ساعتين وإرسال تحذير له. ماذا تريد أن تفعل؟</i>"
+                        f"📌 نوع المخالفة: {violation_type}\n"
+                        f"💬 الرسالة المخالفة:\n<code>{text}</code>\n"
+                        f"⏰ الوقت: {time_str}\n\n"
+                        f"⚡️ <i>الإجراء: تم كتمه ساعتين وإرسال تحذير له.</i>"
                     )
                     markup = InlineKeyboardMarkup()
                     markup.row(
@@ -296,7 +307,7 @@ def group_moderation(message):
         except Exception as e:
             print(f"Error in group moderation: {e}")
 
-# --- معالجة النصوص (العملاء والإدارة) ---
+# --- معالجة النصوص والخدمات ---
 @bot.message_handler(func=lambda message: True)
 def handle_text(message):
     user_id = message.from_user.id
@@ -351,7 +362,7 @@ def handle_text(message):
                     except: pass
                 bot.send_message(user_id, f"✅ تمت الإذاعة بنجاح لـ {count} مستخدم.", reply_markup=admin_keyboard())
             
-            # --- تعديل أسعار الخدمات مع النشر التلقائي في القناة ---
+            # --- تعديل أسعار الخدمات ونشرها في القناة ---
             elif action == 'change_price_yt':
                 new_price = int(text)
                 settings_collection.update_one({"_id": "bot_settings"}, {"$set": {"price_yt": new_price}})
@@ -359,7 +370,7 @@ def handle_text(message):
                 try:
                     channel_msg = (
                         f"📢 <b>تحديث مميز في أسعار الخدمات! 📺</b>\n\n"
-                        f"تم تخفيض/تعديل سعر اشتراك <b>يوتيوب بريميوم</b> ليصبح فقط <b>{new_price}</b> نقطة!\n"
+                        f"تم تعديل سعر اشتراك <b>يوتيوب بريميوم</b> ليصبح فقط <b>{new_price}</b> نقطة!\n"
                         f"سارع بطلب تفعيلك الفوري الآن عبر البوت 👇"
                     )
                     markup = InlineKeyboardMarkup()
@@ -375,7 +386,7 @@ def handle_text(message):
                 try:
                     channel_msg = (
                         f"📢 <b>تحديث مميز في أسعار الخدمات! 🎵</b>\n\n"
-                        f"تم تخفيض/تعديل سعر اشتراك <b>سبوتيفاي بريميوم</b> ليصبح فقط <b>{new_price}</b> نقطة!\n"
+                        f"تم تعديل سعر اشتراك <b>سبوتيفاي بريميوم</b> ليصبح فقط <b>{new_price}</b> نقطة!\n"
                         f"سارع بطلب تفعيلك الفوري الآن عبر البوت 👇"
                     )
                     markup = InlineKeyboardMarkup()
@@ -391,7 +402,7 @@ def handle_text(message):
                 try:
                     channel_msg = (
                         f"📢 <b>تحديث مميز في أسعار الخدمات! ✨</b>\n\n"
-                        f"تم تخفيض/تعديل سعر اشتراك <b>جيميناي برو</b> ليصبح فقط <b>{new_price}</b> نقطة!\n"
+                        f"تم تعديل سعر اشتراك <b>جيميناي برو</b> ليصبح فقط <b>{new_price}</b> نقطة!\n"
                         f"سارع بطلب تفعيلك الفوري الآن عبر البوت 👇"
                     )
                     markup = InlineKeyboardMarkup()
@@ -510,7 +521,7 @@ def handle_text(message):
             if is_group:
                 try: bot.delete_message(message.chat.id, message.message_id)
                 except: pass
-                threading.Thread(target=delayed_delete, args=(message.chat.id, resp.message_id)).start()
+                threading.Thread(target=delayed_delete, args=(message.chat.id, resp.message_id, 3)).start()
             return
 
         streak = streak + 1 if last_date == yesterday_str else 1
@@ -543,10 +554,10 @@ def handle_text(message):
 
         resp = bot.send_message(message.chat.id, daily_msg, parse_mode="HTML")
         if is_group:
+            # حذف رسالة طلب المستخدم ورسالة رد البوت معاً بعد 3 ثوانٍ بدقة
             try: bot.delete_message(message.chat.id, message.message_id)
             except: pass
-            # حذف رسالة الطلب ورسالة الرد معاً بعد ثوانٍ في المجموعة
-            threading.Thread(target=delayed_delete, args=(message.chat.id, resp.message_id, 4)).start()
+            threading.Thread(target=delayed_delete, args=(message.chat.id, resp.message_id, 3)).start()
 
     elif text == BTN_ACCOUNT:
         points = user.get("points", 0)
@@ -555,7 +566,7 @@ def handle_text(message):
         if is_group:
             try: bot.delete_message(message.chat.id, message.message_id)
             except: pass
-            threading.Thread(target=delayed_delete, args=(message.chat.id, resp.message_id, 4)).start()
+            threading.Thread(target=delayed_delete, args=(message.chat.id, resp.message_id, 3)).start()
 
     elif text == BTN_MAIN and not is_group:
         bot.send_message(user_id, "🏠 مرحباً بك في الرئيسية.", reply_markup=main_keyboard())
