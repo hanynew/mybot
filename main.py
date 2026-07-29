@@ -12,6 +12,10 @@ ADMIN_ID = os.environ.get('ADMIN_ID')
 bot = telebot.TeleBot(BOT_TOKEN, parse_mode='HTML', threaded=False)
 app = Flask(__name__)
 
+# --- إعداد قناة ومجموعة المتجر ---
+CHANNEL_USERNAME = "@SubGateSA"
+GROUP_USERNAME = "@SubGateChat"
+
 # --- إعداد قاعدة البيانات MongoDB ---
 MONGO_URI = "mongodb+srv://hanytgribi_db_user:KA1999KA@cluster0.kez5fjj.mongodb.net/?appName=Cluster0"
 client = MongoClient(MONGO_URI)
@@ -19,7 +23,6 @@ db = client['MyBotDB']
 users_collection = db['users']
 settings_collection = db['settings']
 
-# --- جلب إعدادات المتجر ---
 def get_settings():
     s = settings_collection.find_one({"_id": "bot_settings"})
     if not s:
@@ -42,7 +45,6 @@ BTN_HELP = "❓ المساعدة"
 BTN_GUIDE = "📖 التعليمات"
 BTN_MAIN = "🏠 الرئيسية"
 
-# --- لوحة المفاتيح الرئيسية للعملاء ---
 def main_keyboard():
     markup = ReplyKeyboardMarkup(resize_keyboard=True, row_width=2)
     markup.add(KeyboardButton(BTN_YT), KeyboardButton(BTN_SPOTIFY))
@@ -53,14 +55,39 @@ def main_keyboard():
     markup.add(KeyboardButton(BTN_MAIN))
     return markup
 
-# --- لوحة تحكم الإدارة (تظهر لك فقط) ---
 def admin_keyboard():
     markup = ReplyKeyboardMarkup(resize_keyboard=True, row_width=2)
     markup.add(KeyboardButton("🚫 حظر مستخدم"), KeyboardButton("✅ فك حظر"))
     markup.add(KeyboardButton("➕ إضافة نقاط"), KeyboardButton("➖ سحب نقاط"))
     markup.add(KeyboardButton("📩 رد/رسالة لمستخدم"), KeyboardButton("📢 إذاعة للجميع"))
     markup.add(KeyboardButton("💰 تعديل سعر الخدمات"), KeyboardButton("🎁 تعديل مكافأة الدعوة"))
+    markup.add(KeyboardButton("📊 إحصائيات المستخدمين"), KeyboardButton("🚫 قائمة المحظورين"))
     markup.add(KeyboardButton("🔍 استعلام عن مستخدم"), KeyboardButton(BTN_MAIN))
+    return markup
+
+# --- دالة التحقق من الاشتراك الإجباري ---
+def check_user_subscription(user_id):
+    if str(user_id) == str(ADMIN_ID):
+        return True # الأدمن مستثنى
+    try:
+        # فحص القناة
+        channel_member = bot.get_chat_member(CHANNEL_USERNAME, user_id)
+        if channel_member.status in ['left', 'kicked']:
+            return False
+        # فحص المجموعة
+        group_member = bot.get_chat_member(GROUP_USERNAME, user_id)
+        if group_member.status in ['left', 'kicked']:
+            return False
+        return True
+    except Exception as e:
+        print(f"Error checking sub: {e}")
+        return True # لتفادي توقف البوت في حال خطأ تقني بالصلاحيات
+
+def subscription_required_markup():
+    markup = InlineKeyboardMarkup()
+    markup.add(InlineKeyboardButton("📢 اشترك في القناة", url=f"https://t.me/{CHANNEL_USERNAME[1:]}"))
+    markup.add(InlineKeyboardButton("💬 انضم لمجموعة المناقشة", url=f"https://t.me/{GROUP_USERNAME[1:]}"))
+    markup.add(InlineKeyboardButton("✅ تحقق من الاشتراك", callback_data="check_subscription"))
     return markup
 
 # --- أمر فتح لوحة الإدارة ---
@@ -71,7 +98,7 @@ def open_admin_panel(message):
     else:
         bot.send_message(message.chat.id, "⛔️ عذراً، لا تملك صلاحية الدخول.")
 
-# --- رسالة الترحيب ونظام الدعوات ---
+# --- رسالة الترحيب والاشتراك الإجباري ---
 @bot.message_handler(commands=['start'])
 def send_welcome(message):
     user_id = message.from_user.id
@@ -82,6 +109,15 @@ def send_welcome(message):
 
     if user and user.get("is_banned", False):
         bot.send_message(user_id, "⛔️ <b>عذراً، تم حظر حسابك من استخدام هذا البوت.</b>", parse_mode="HTML")
+        return
+
+    # فحص الاشتراك الإجباري
+    if not check_user_subscription(user_id):
+        bot.send_message(
+            user_id, 
+            "⚠️ <b>عذراً، يجب عليك الانضمام لقناة ومجموعة المتجر أولاً لتتمكن من استخدام البوت الاستفادة من الخدمات والخصومات!</b>\n\nبعد الانضمام، اضغط على زر <b>(تحقق من الاشتراك ✅)</b> بالأسفل 👇", 
+            reply_markup=subscription_required_markup()
+        )
         return
 
     if not user:
@@ -105,8 +141,39 @@ def send_welcome(message):
                 try: bot.send_message(referrer_id, f"🎉 ياي! قام صديق بالتسجيل عبر رابطك! تمت إضافة ({ref_bonus}) نقطة لرصيدك بنجاح.")
                 except: pass
 
-    welcome_text = f"أهلاً بك يا <b>{first_name}</b> في متجرنا الإلكتروني! 🤖✨\n\nتفضل باختيار ما تريد من القائمة التفاعلية بالأسفل 👇"
+    welcome_text = f"أهلاً بك يا <b>{first_name}</b> في متجرنا الإلكتروني <b>بوابة الاشتراكات</b>! 🤖✨\n\nتفضل باختيار ما تريد من القائمة التفاعلية بالأسفل 👇"
     bot.send_message(message.chat.id, welcome_text, reply_markup=main_keyboard())
+
+# --- معالجة زر التحقق من الاشتراك ---
+@bot.callback_query_handler(func=lambda call: call.data == "check_subscription")
+def verify_subscription(call):
+    user_id = call.from_user.id
+    if check_user_subscription(user_id):
+        bot.answer_callback_query(call.id, "✅ تم التحقق بنجاح! أهلاً بك.")
+        try: bot.delete_message(user_id, call.message.message_id)
+        except: pass
+        send_welcome(call.message)
+    else:
+        bot.answer_callback_query(call.id, "❌ لم تقم بالانضمام للقناة أو المجموعة بعد!", show_alert=True)
+
+# --- حماية المجموعة (حذف الروابط + الحظر التلقائي) ---
+@bot.message_handler(func=lambda message: message.chat.type in ['group', 'supergroup'])
+def group_moderation(message):
+    user_id = message.from_user.id
+    if str(user_id) == str(ADMIN_ID):
+        return
+
+    text = message.text or ""
+    has_link = ("http://" in text or "https://" in text or "t.me/" in text or "@" in text)
+    
+    if has_link:
+        try:
+            bot.delete_message(message.chat.id, message.message_id)
+            users_collection.update_one({"user_id": user_id}, {"$set": {"is_banned": True}})
+            bot.ban_chat_member(message.chat.id, user_id)
+            bot.send_message(message.chat.id, f"🚫 تم حظر العضو <code>{user_id}</code> آلياً بسبب نشر روابط أو إعلانات.", parse_mode="HTML")
+        except Exception as e:
+            print(f"Error in moderation: {e}")
 
 # --- زر الرد من تحت الطلب مباشرة ---
 @bot.callback_query_handler(func=lambda call: call.data.startswith('reply_'))
@@ -215,6 +282,35 @@ def handle_text(message):
             admin_states[user_id] = {'action': 'change_referral'}; bot.send_message(user_id, "أرسل نقاط المكافأة الجديدة لدعوة الأصدقاء (رقم فقط):"); return
         elif text == "🔍 استعلام عن مستخدم":
             admin_states[user_id] = {'action': 'check_user'}; bot.send_message(user_id, "أرسل ID العميل للاستعلام عن بياناته وحسابه:"); return
+        elif text == "📊 إحصائيات المستخدمين":
+            all_users = list(users_collection.find({}))
+            total = len(all_users)
+            msg = f"📊 <b>إحصائيات مستخدمي البوت:</b>\n\n👥 <b>العدد الإجمالي:</b> {total} مستخدم\n\n<b>قائمة المشتركين:</b>\n"
+            for u in all_users[:30]:
+                msg += f"• {u.get('first_name', 'مستخدم')} | <code>{u.get('user_id')}</code> | ({u.get('points', 0)} نقطة)\n"
+            if total > 30: msg += f"\n...وغيرهم {total - 30} مستخدم."
+            bot.send_message(user_id, msg, reply_markup=admin_keyboard())
+            return
+        elif text == "🚫 قائمة المحظورين":
+            banned_users = list(users_collection.find({"is_banned": True}))
+            total_banned = len(banned_users)
+            if total_banned == 0:
+                bot.send_message(user_id, "✅ لا يوجد أي مستخدم محظور حالياً.", reply_markup=admin_keyboard())
+            else:
+                msg = f"🚫 <b>قائمة المحظورين ({total_banned}):</b>\n\n"
+                for u in banned_users:
+                    msg += f"• {u.get('first_name', 'مستخدم')} | <code>{u.get('user_id')}</code>\n"
+                bot.send_message(user_id, msg, reply_markup=admin_keyboard())
+            return
+
+    # فحص الاشتراك الإجباري لكل تفاعل من العميل
+    if not check_user_subscription(user_id):
+        bot.send_message(
+            user_id, 
+            "⚠️ <b>عذراً، يجب عليك الانضمام لقناة ومجموعة المتجر أولاً لتتمكن من استخدام البوت!</b>", 
+            reply_markup=subscription_required_markup()
+        )
+        return
 
     user = users_collection.find_one({"user_id": user_id})
     if not user: return bot.send_message(user_id, "⚠️ الرجاء إرسال أمر /start أولاً لتسجيل حسابك.")
@@ -299,7 +395,7 @@ def submit_form():
     return jsonify({"status": "error"}), 400
 
 # ==========================================
-# --- أكواد ونماذج HTML المدمجة (مع فلترة الحروف العربية والمسافات) ---
+# --- أكواد ونماذج HTML المدمجة (مع الفلترة الشاملة) ---
 # ==========================================
 
 @app.route('/youtube.html')
@@ -564,32 +660,28 @@ def gemini_form():
                 let isValid = true;
                 const hasArabic = (str) => /[\u0600-\u06FF]/.test(str);
                 
-                // 1. Email check
                 if(!email.endsWith("@gmail.com") || hasArabic(email)) {
                     showError('email', "⚠️ يجب أن ينتهي بـ @gmail.com وبدون حروف عربية");
                     isValid = false;
                 }
                 
-                // 2. Password check
                 if(!pwd || hasArabic(pwd)) {
                     showError('password', "⚠️ يرجى إدخال كلمة المرور (بدون حروف عربية)");
                     isValid = false;
                 }
                 
-                // 3. TOTP check (ignore spaces, 32 alphanumeric chars, no Arabic)
                 let totpClean = totpRaw.replace(/\s/g, ''); 
                 if(totpClean.length !== 32 || !/^[a-zA-Z0-9]+$/.test(totpClean) || hasArabic(totpRaw)) {
                     showError('totp', "⚠️ الرمز يجب أن يكون 32 حرفاً ورقماً (يُسمح بالمسافات وبدون حروف عربية)");
                     isValid = false;
                 }
                 
-                // 4. Backup check (if not empty -> must be 8 digits per token)
                 if(backup) {
                     if(hasArabic(backup)) {
                         showError('backup', "⚠️ رموز النسخ الاحتياطي يجب أن تكون أرقاماً فقط");
                         isValid = false;
                     } else {
-                        let codes = backup.split(/\s+/); // تقسيم بناء على المسافات أو السطور
+                        let codes = backup.split(/\s+/);
                         for(let code of codes) {
                             if(!/^\d{8}$/.test(code) && code !== "") {
                                 showError('backup', "⚠️ كل رمز احتياطي يجب أن يتكون من 8 أرقام بالضبط");
