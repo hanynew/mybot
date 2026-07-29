@@ -4,6 +4,8 @@ from telebot.types import ReplyKeyboardMarkup, KeyboardButton, InlineKeyboardMar
 from flask import Flask, request, jsonify
 from pymongo import MongoClient
 import datetime
+import threading
+import time
 
 # --- الإعدادات الأساسية ---
 BOT_TOKEN = os.environ.get('BOT_TOKEN', '').strip()
@@ -34,12 +36,6 @@ def get_settings():
             "referral_bonus": 2
         }
         settings_collection.insert_one(s)
-    # للتأكد من وجود جميع المفاتيح في حال تم تحديث السيرفر
-    if "price_yt" not in s:
-        s["price_yt"] = 15
-        s["price_spotify"] = 15
-        s["price_gemini"] = 15
-        settings_collection.update_one({"_id": "bot_settings"}, {"$set": s})
     return s
 
 admin_states = {}
@@ -67,7 +63,6 @@ def main_keyboard():
     markup.add(KeyboardButton(BTN_MAIN))
     return markup
 
-# لوحة مفاتيح خاصة بالمجموعة (زرين فقط)
 def group_keyboard():
     markup = ReplyKeyboardMarkup(resize_keyboard=True, row_width=2)
     markup.add(KeyboardButton(BTN_DAILY), KeyboardButton(BTN_ACCOUNT))
@@ -106,6 +101,14 @@ def subscription_required_markup():
     markup.add(InlineKeyboardButton("✅ تحقق من الاشتراك", callback_data="check_subscription"))
     return markup
 
+# وظيفة لحذف رسائل البوت في المجموعة بعد 3 ثوانٍ
+def delayed_delete(chat_id, message_id):
+    time.sleep(3)
+    try:
+        bot.delete_message(chat_id, message_id)
+    except:
+        pass
+
 @bot.message_handler(commands=['admin'])
 def open_admin_panel(message):
     if str(message.from_user.id) == str(ADMIN_ID):
@@ -133,6 +136,7 @@ def send_welcome(message):
         )
         return
 
+    now_str = datetime.datetime.now().strftime("%Y-%m-%d %H:%M")
     if not user:
         users_collection.insert_one({
             "user_id": user_id,
@@ -141,7 +145,10 @@ def send_welcome(message):
             "invites": 0,
             "last_collected_date": None,
             "streak": 0,
-            "is_banned": False
+            "is_banned": False,
+            "join_date": now_str,
+            "last_active": datetime.datetime.now(),
+            "warning_count": 0
         })
         if len(args) > 1 and args[1].isdigit():
             referrer_id = int(args[1])
@@ -153,10 +160,11 @@ def send_welcome(message):
                 )
                 try: bot.send_message(referrer_id, f"🎉 ياي! قام صديق بالتسجيل عبر رابطك! تمت إضافة ({ref_bonus}) نقطة لرصيدك بنجاح.")
                 except: pass
+    else:
+        # تحديث وقت اخر نشاط
+        users_collection.update_one({"user_id": user_id}, {"$set": {"last_active": datetime.datetime.now()}})
 
     welcome_text = f"أهلاً بك يا <b>{first_name}</b> في متجرنا الإلكتروني <b>بوابة الاشتراكات</b>! 🤖✨\n\nتفضل باختيار ما تريد من القائمة التفاعلية بالأسفل 👇"
-    
-    # تحديد نوع اللوحة (خاصة أم مجموعة)
     kb = group_keyboard() if message.chat.type in ['group', 'supergroup'] else main_keyboard()
     bot.send_message(message.chat.id, welcome_text, reply_markup=kb)
 
@@ -171,7 +179,6 @@ def verify_subscription(call):
     else:
         bot.answer_callback_query(call.id, "❌ لم تقم بالانضمام للقناة أو المجموعة بعد!", show_alert=True)
 
-# --- زر الرد من تحت الطلب مباشرة ---
 @bot.callback_query_handler(func=lambda call: call.data.startswith('reply_'))
 def handle_reply_button(call):
     if str(call.from_user.id) == str(ADMIN_ID):
@@ -180,7 +187,66 @@ def handle_reply_button(call):
         bot.send_message(ADMIN_ID, f"✍️ <b>وضع الرد مفعل:</b>\nاكتب رسالتك الآن للعميل: <code>{target_id}</code>\n\n(لإلغاء الأمر أرسل /cancel)")
         bot.answer_callback_query(call.id)
 
-# --- التفاعل مع كل النصوص (في الخص والمجموعات والإدارة) ---
+# --- نظام الفلترة والرقابة الذكية في المجموعة ---
+@bot.message_handler(func=lambda message: message.chat.type in ['group', 'supergroup'])
+def group_moderation(message):
+    user_id = message.from_user.id
+    if str(user_id) == str(ADMIN_ID):
+        return
+
+    text = message.text or ""
+    text_lower = text.lower()
+    
+    # كلمات ومخالفات ممنوعة (روابط، إباحي، تعارف، غزل، إزعاج)
+    bad_keywords = [
+        "http://", "https://", "t.me/", "@", 
+        "تعارف", "بنات", "سنابي", "واتساب", "رقمي", "كلمني", 
+        "اباحي", "جنس", "مخنث", "نيك", "شرموط", "سكس", "عشق", "غزل", "حبيبي", "تعال خاص"
+    ]
+    
+    is_violation = any(word in text_lower for word in bad_keywords)
+
+    if is_violation:
+        try:
+            # 1. حذف الرسالة المخالفة فوراً
+            bot.delete_message(message.chat.id, message.message_id)
+            
+            # فحص سجل العميل لتحذيره أو حظره نهائياً
+            user = users_collection.find_one({"user_id": user_id})
+            warnings = user.get("warning_count", 0) if user else 0
+            
+            if warnings >= 1:
+                # إذا كرر المخالفة -> حظر نهائي من المجموعة ومن البوت
+                users_collection.update_one({"user_id": user_id}, {"$set": {"is_banned": True}})
+                bot.ban_chat_member(message.chat.id, user_id)
+                bot.send_message(message.chat.id, f"🚫 تم حظر العضو <code>{user_id}</code> نهائياً لتكراره المخالفة.", parse_mode="HTML")
+                try:
+                    bot.send_message(user_id, "⛔️ <b>تم حظر حسابك نهائياً من المتجر والمجموعة بسبب تكرار المخالفات وإرسال محتوى محظور.</b>")
+                except: pass
+            else:
+                # المخالفة الأولى -> إيقاف مؤقت ساعتين في المجموعة وتحذير خاص
+                users_collection.update_one({"user_id": user_id}, {"$inc": {"warning_count": 1}})
+                
+                # تقييد العضو في المجموعة لمدة ساعتين
+                until_date = int(time.time()) + 7200
+                bot.restrict_chat_member(message.chat.id, user_id, until_date=until_date, can_send_messages=False)
+                
+                bot.send_message(message.chat.id, f"⚠️ تنبيه: تم كتم العضو <code>{user_id}</code> لمدة ساعتين بسبب محتوى مخالف.", parse_mode="HTML")
+                
+                # إرسال تحذير للعميل في الخاص
+                try:
+                    bot.send_message(user_id, f"⚠️ <b>تحذير إداري:</b>\nتم إيقافك مؤقتاً في المجموعة لمدة ساعتين بسبب إرسال محتوى مخالف أو روابط.\nإذا كررت المخالفة سيتم حظرك نهائياً.")
+                except: pass
+                
+                # إرسال إشعار للأدمن بالتفاصيل
+                if ADMIN_ID:
+                    admin_alert = f"🚨 <b>مستخدم مزعج/مخالف جديد!</b>\n\n👤 الاسم: {message.from_user.first_name}\n🆔 الآيدي: <code>{user_id}</code>\n💬 الرسالة المخالفة:\n<code>{text}</code>\n\n⚡️ <i>الإجراء: تم كتمه لمدة ساعتين وإرسال تحذير له.</i>"
+                    bot.send_message(ADMIN_ID, admin_alert)
+                    
+        except Exception as e:
+            print(f"Error in group moderation: {e}")
+
+# --- معالجة النصوص (العملاء والإدارة) ---
 @bot.message_handler(func=lambda message: True)
 def handle_text(message):
     user_id = message.from_user.id
@@ -188,20 +254,6 @@ def handle_text(message):
     is_admin = (str(user_id) == str(ADMIN_ID))
     is_group = message.chat.type in ['group', 'supergroup']
 
-    # === 1. حماية المجموعة وحذف الروابط للإعضاء العاديين ===
-    if is_group and not is_admin:
-        has_link = ("http://" in text or "https://" in text or "t.me/" in text or "@" in text)
-        if has_link:
-            try:
-                bot.delete_message(message.chat.id, message.message_id)
-                users_collection.update_one({"user_id": user_id}, {"$set": {"is_banned": True}})
-                bot.ban_chat_member(message.chat.id, user_id)
-                bot.send_message(message.chat.id, f"🚫 تم حظر العضو <code>{user_id}</code> آلياً بسبب نشر روابط أو إعلانات.", parse_mode="HTML")
-                return
-            except Exception as e:
-                print(f"Error in moderation: {e}")
-
-    # === 2. معالجة أوامر لوحة الإدارة ===
     if is_admin and user_id in admin_states:
         if text == '/cancel':
             del admin_states[user_id]
@@ -217,7 +269,7 @@ def handle_text(message):
                 bot.send_message(user_id, f"✅ تم حظر المستخدم {target_id}", reply_markup=admin_keyboard())
             elif action == 'unban_user':
                 target_id = int(text)
-                users_collection.update_one({"user_id": target_id}, {"$set": {"is_banned": False}})
+                users_collection.update_one({"user_id": target_id}, {"$set": {"is_banned": False, "warning_count": 0}})
                 bot.send_message(user_id, f"✅ تم فك الحظر عن {target_id}", reply_markup=admin_keyboard())
             elif action == 'add_points':
                 parts = text.split()
@@ -239,7 +291,6 @@ def handle_text(message):
                 return
             elif action == 'reply_user':
                 target_id = int(state['target'])
-                # الرد يظهر بدون عبارة "من الإدارة" كما طلبت
                 bot.send_message(target_id, text)
                 bot.send_message(user_id, "✅ تم إرسال رسالتك للعميل بنجاح.", reply_markup=admin_keyboard())
             elif action == 'broadcast':
@@ -249,8 +300,6 @@ def handle_text(message):
                     try: bot.send_message(u['user_id'], text); count += 1
                     except: pass
                 bot.send_message(user_id, f"✅ تمت الإذاعة بنجاح لـ {count} مستخدم.", reply_markup=admin_keyboard())
-            
-            # أسعار الخدمات المخصصة
             elif action == 'change_price_yt':
                 new_price = int(text)
                 settings_collection.update_one({"_id": "bot_settings"}, {"$set": {"price_yt": new_price}})
@@ -263,7 +312,6 @@ def handle_text(message):
                 new_price = int(text)
                 settings_collection.update_one({"_id": "bot_settings"}, {"$set": {"price_gemini": new_price}})
                 bot.send_message(user_id, f"✅ تم تغيير سعر خدمة جيميناي إلى {new_price} نقطة.", reply_markup=admin_keyboard())
-
             elif action == 'change_referral':
                 new_ref = int(text)
                 settings_collection.update_one({"_id": "bot_settings"}, {"$set": {"referral_bonus": new_ref}})
@@ -306,15 +354,36 @@ def handle_text(message):
             admin_states[user_id] = {'action': 'change_referral'}; bot.send_message(user_id, "أرسل نقاط المكافأة الجديدة لدعوة الأصدقاء (رقم فقط):"); return
         elif text == "🔍 استعلام عن مستخدم":
             admin_states[user_id] = {'action': 'check_user'}; bot.send_message(user_id, "أرسل ID العميل للاستعلام عن بياناته وحسابه:"); return
+        
+        # --- إحصائيات المستخدمين مع النقاط الملونة (نشط: أخضر، متوسط: أصفر، غائب: أحمر) ---
         elif text == "📊 إحصائيات المستخدمين":
             all_users = list(users_collection.find({}))
             total = len(all_users)
+            now = datetime.datetime.now()
+            
             msg = f"📊 <b>إحصائيات مستخدمي البوت:</b>\n\n👥 <b>العدد الإجمالي:</b> {total} مستخدم\n\n<b>قائمة المشتركين:</b>\n"
             for u in all_users[:30]:
-                msg += f"• {u.get('first_name', 'مستخدم')} | <code>{u.get('user_id')}</code> | ({u.get('points', 0)} نقطة)\n"
+                u_name = u.get('first_name', 'مستخدم')
+                u_id = u.get('user_id')
+                u_pts = u.get('points', 0)
+                u_date = u.get('join_date', 'غير متوفر')
+                last_act = u.get('last_active', now)
+                
+                # احتساب حالة النشاط
+                diff_days = (now - last_act).days if isinstance(last_act, datetime.datetime) else 0
+                if diff_days <= 3:
+                    status_dot = "🟢" # نشط جداً
+                elif diff_days <= 7:
+                    status_dot = "🟡" # متوسط النشاط
+                else:
+                    status_dot = "🔴" # غير نشط
+                
+                msg += f"{status_dot} {u_name} | <code>{u_id}</code> | ({u_pts} نقطة) | 📅 {u_date}\n"
+                
             if total > 30: msg += f"\n...وغيرهم {total - 30} مستخدم."
             bot.send_message(user_id, msg, reply_markup=admin_keyboard())
             return
+            
         elif text == "🚫 قائمة المحظورين":
             banned_users = list(users_collection.find({"is_banned": True}))
             total_banned = len(banned_users)
@@ -327,7 +396,9 @@ def handle_text(message):
                 bot.send_message(user_id, msg, reply_markup=admin_keyboard())
             return
 
-    # === 3. معالجة تفاعل العملاء (في البوت أو المجموعة) ===
+    # تحديث نشاط العميل عند كل تفاعل
+    users_collection.update_one({"user_id": user_id}, {"$set": {"last_active": datetime.datetime.now()}})
+
     if not check_user_subscription(user_id):
         bot.send_message(
             user_id, 
@@ -343,7 +414,6 @@ def handle_text(message):
     bot_settings = get_settings()
     ref_bonus = bot_settings.get("referral_bonus", 2)
 
-    # --- الهدية اليومية بتصميمها الجديد ---
     if text == BTN_DAILY:
         today_str = datetime.datetime.now().strftime("%Y-%m-%d")
         yesterday_str = (datetime.datetime.now() - datetime.timedelta(days=1)).strftime("%Y-%m-%d")
@@ -353,10 +423,9 @@ def handle_text(message):
         if last_date == today_str:
             resp = bot.send_message(message.chat.id, "⏳ لقد قمت بجمع هديتك اليوم! ننتظرك غداً بشوق.")
             if is_group:
-                try:
-                    bot.delete_message(message.chat.id, message.message_id)
-                    # حذف رد البوت بعد 5 ثوانٍ في المجموعة للحفاظ على النظافة
+                try: bot.delete_message(message.chat.id, message.message_id)
                 except: pass
+                threading.Thread(target=delayed_delete, args=(message.chat.id, resp.message_id)).start()
             return
 
         streak = streak + 1 if last_date == yesterday_str else 1
@@ -389,20 +458,19 @@ def handle_text(message):
 
         resp = bot.send_message(message.chat.id, daily_msg, parse_mode="HTML")
         if is_group:
-            try:
-                bot.delete_message(message.chat.id, message.message_id)
+            try: bot.delete_message(message.chat.id, message.message_id)
             except: pass
+            threading.Thread(target=delayed_delete, args=(message.chat.id, resp.message_id)).start()
 
     elif text == BTN_ACCOUNT:
         points = user.get("points", 0)
         account_msg = f"👤 <b>الاسم:</b> {user.get('first_name', 'غير معروف')}\n🆔 <b>رقم الحساب:</b> <code>{user_id}</code>\n⭐ <b>الرصيد:</b> {points} نقطة\n🤝 <b>المدعوين:</b> {user.get('invites', 0)}"
         resp = bot.send_message(message.chat.id, account_msg, parse_mode="HTML")
         if is_group:
-            try:
-                bot.delete_message(message.chat.id, message.message_id)
+            try: bot.delete_message(message.chat.id, message.message_id)
             except: pass
+            threading.Thread(target=delayed_delete, args=(message.chat.id, resp.message_id)).start()
 
-    # الخدمات السفلية تعمل في البوت الخاص فقط
     elif text == BTN_MAIN and not is_group:
         bot.send_message(user_id, "🏠 مرحباً بك في الرئيسية.", reply_markup=main_keyboard())
 
@@ -414,8 +482,6 @@ def handle_text(message):
 
     elif text in [BTN_YT, BTN_SPOTIFY, BTN_GEMINI] and not is_group:
         points = user.get("points", 0)
-        
-        # ربط كل خدمة بسعرها المخصص
         price_map = {
             BTN_YT: bot_settings.get("price_yt", 15),
             BTN_SPOTIFY: bot_settings.get("price_spotify", 15),
@@ -444,14 +510,13 @@ def submit_form():
     data = request.json
     user_id = int(data.get('uid'))
     msg_id = int(data.get('msg_id'))
-    service_type = data.get('service', 'yt') # yt, spotify, gemini
+    service_type = data.get('service', 'yt')
     form_data = data.get('dataString')
 
     user = users_collection.find_one({"user_id": user_id})
     if user and user.get("is_banned", False): return jsonify({"status": "banned"}), 403
 
     bot_settings = get_settings()
-    
     price_map = {
         'youtube': bot_settings.get("price_yt", 15),
         'spotify': bot_settings.get("price_spotify", 15),
