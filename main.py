@@ -15,33 +15,30 @@ ADMIN_ID = os.environ.get('ADMIN_ID')
 bot = telebot.TeleBot(BOT_TOKEN, parse_mode='HTML', threaded=False)
 app = Flask(__name__)
 
-# --- إعداد قناة ومجموعة المتجر ---
-CHANNEL_USERNAME = "@SubGateSA"
-GROUP_USERNAME = "@SubGateChat"
-
-# --- إعداد قاعدة البيانات MongoDB ---
+# --- إعداد قاعدة البيانات ---
 MONGO_URI = "mongodb+srv://hanytgribi_db_user:KA1999KA@cluster0.kez5fjj.mongodb.net/?appName=Cluster0"
 client = MongoClient(MONGO_URI)
 db = client['MyBotDB']
 users_collection = db['users']
 settings_collection = db['settings']
 
+# --- إعداد قناة ومجموعة المتجر ---
+CHANNEL_USERNAME = "@SubGateSA"
+GROUP_USERNAME = "@SubGateChat"
+
+# --- دالة الوقت المحلي (توقيت السعودية UTC+3) ---
+def get_ksa_time():
+    return datetime.datetime.utcnow() + datetime.timedelta(hours=3)
+
 def get_settings():
     s = settings_collection.find_one({"_id": "bot_settings"})
     if not s:
         s = {
-            "_id": "bot_settings", 
-            "price_yt": 15, 
-            "price_spotify": 15, 
-            "price_gemini": 15, 
-            "referral_bonus": 2,
-            "point_price_sar": 1.0,
-            "point_price_yer": 100.0,
-            "points_per_usdt": 15.0
+            "_id": "bot_settings", "price_yt": 15, "price_spotify": 15, "price_gemini": 15, 
+            "referral_bonus": 2, "point_price_sar": 1.0, "point_price_yer": 100.0, "points_per_usdt": 15.0
         }
         settings_collection.insert_one(s)
     
-    # ضمان وجود مفاتيح أسعار الشحن في حال كانت البيانات قديمة
     needs_update = False
     if "point_price_sar" not in s: s["point_price_sar"] = 1.0; needs_update = True
     if "point_price_yer" not in s: s["point_price_yer"] = 100.0; needs_update = True
@@ -50,9 +47,7 @@ def get_settings():
     return s
 
 admin_states = {}
-user_states = {} # لتتبع حالة إدخال المبالغ والصور للعملاء
-
-# --- تتبع الفلود والسبام ---
+user_states = {} 
 user_flood_tracker = {}
 user_last_msg = {}
 
@@ -91,7 +86,6 @@ def admin_keyboard():
     markup.add(KeyboardButton("📩 رد/رسالة لمستخدم"), KeyboardButton("📢 إذاعة للجميع"))
     markup.add(KeyboardButton("📺 سعر يوتيوب"), KeyboardButton("🎵 سعر سبوتيفاي"))
     markup.add(KeyboardButton("✨ سعر جيميناي"), KeyboardButton("🎁 تعديل مكافأة الدعوة"))
-    # أزرار ضبط أسعار الإيداع
     markup.add(KeyboardButton("⚙️ تعديل سعر النقطة (SAR)"), KeyboardButton("⚙️ تعديل سعر النقطة (YER)"))
     markup.add(KeyboardButton("⚙️ تعديل سعر النقطة (USDT)"), KeyboardButton("📊 إحصائيات المستخدمين"))
     markup.add(KeyboardButton("🔍 استعلام عن مستخدم"), KeyboardButton("🚫 قائمة المحظورين"))
@@ -99,18 +93,12 @@ def admin_keyboard():
     return markup
 
 def check_user_subscription(user_id):
-    if str(user_id) == str(ADMIN_ID):
-        return True
+    if str(user_id) == str(ADMIN_ID): return True
     try:
-        channel_member = bot.get_chat_member(CHANNEL_USERNAME, user_id)
-        if channel_member.status in ['left', 'kicked']:
-            return False
-        group_member = bot.get_chat_member(GROUP_USERNAME, user_id)
-        if group_member.status in ['left', 'kicked']:
-            return False
+        if bot.get_chat_member(CHANNEL_USERNAME, user_id).status in ['left', 'kicked']: return False
+        if bot.get_chat_member(GROUP_USERNAME, user_id).status in ['left', 'kicked']: return False
         return True
-    except Exception as e:
-        return True
+    except: return True
 
 def subscription_required_markup():
     markup = InlineKeyboardMarkup()
@@ -119,7 +107,7 @@ def subscription_required_markup():
     markup.add(InlineKeyboardButton("✅ تحقق من الاشتراك", callback_data="check_subscription"))
     return markup
 
-# وظيفة حذف الرسائل المزدوجة (الطلب والرد)
+# وظيفة مسح الرسائل الذكية
 def delayed_delete(chat_id, user_msg_id, bot_msg_id, delay=3.0):
     def delete_task():
         time.sleep(delay)
@@ -129,19 +117,29 @@ def delayed_delete(chat_id, user_msg_id, bot_msg_id, delay=3.0):
         except: pass
     threading.Thread(target=delete_task).start()
 
+# دالة مسح سجل عملية الإيداع عند الإلغاء
+def cleanup_deposit_messages(user_id):
+    if user_id in user_states and 'dep_msgs' in user_states[user_id]:
+        for msg_id in user_states[user_id]['dep_msgs']:
+            try: bot.delete_message(user_id, msg_id)
+            except: pass
+        user_states[user_id]['dep_msgs'] = []
+
+# تتبع رسائل البوت للحذف لاحقا
+def track_msg(user_id, msg_id):
+    if user_id not in user_states: user_states[user_id] = {}
+    if 'dep_msgs' not in user_states[user_id]: user_states[user_id]['dep_msgs'] = []
+    user_states[user_id]['dep_msgs'].append(msg_id)
+
 @bot.message_handler(commands=['admin'])
 def open_admin_panel(message):
     if str(message.from_user.id) == str(ADMIN_ID):
         bot.send_message(message.chat.id, "🛠️ <b>مرحباً بك في لوحة تحكم الإدارة:</b>\nاختر الإجراء الذي تريده من الأزرار بالأسفل 👇", reply_markup=admin_keyboard())
-    else:
-        bot.send_message(message.chat.id, "⛔️ عذراً، لا تملك صلاحية الدخول.")
+    else: bot.send_message(message.chat.id, "⛔️ عذراً، لا تملك صلاحية الدخول.")
 
 @bot.message_handler(commands=['start'])
 def send_welcome(message):
     user_id = message.from_user.id
-    first_name = message.from_user.first_name
-    args = message.text.split()
-    
     user = users_collection.find_one({"user_id": user_id})
 
     if user and user.get("is_banned", False):
@@ -149,180 +147,108 @@ def send_welcome(message):
         return
 
     if not check_user_subscription(user_id):
-        bot.send_message(
-            user_id, 
-            "⚠️ <b>عذراً، يجب عليك الانضمام لقناة ومجموعة المتجر أولاً لتتمكن من استخدام البوت الاستفادة من الخدمات والخصومات!</b>\n\nبعد الانضمام، اضغط على زر <b>(تحقق من الاشتراك ✅)</b> بالأسفل 👇", 
-            reply_markup=subscription_required_markup()
-        )
+        bot.send_message(user_id, "⚠️ <b>عذراً، يجب عليك الانضمام لقناة ومجموعة المتجر أولاً لتتمكن من استخدام البوت!</b>", reply_markup=subscription_required_markup())
         return
 
-    now_str = datetime.datetime.now().strftime("%Y-%m-%d %H:%M")
+    now_str = get_ksa_time().strftime("%Y-%m-%d %H:%M")
     if not user:
         users_collection.insert_one({
-            "user_id": user_id,
-            "first_name": first_name,
-            "points": 0,
-            "invites": 0,
-            "last_collected_date": None,
-            "streak": 0,
-            "is_banned": False,
-            "is_muted": False,
-            "mute_until": None,
-            "join_date": now_str,
-            "last_active": datetime.datetime.now(),
-            "warning_count": 0
+            "user_id": user_id, "first_name": message.from_user.first_name, "points": 0, "invites": 0,
+            "last_collected_date": None, "streak": 0, "is_banned": False, "is_muted": False, "mute_until": None,
+            "join_date": now_str, "last_active": get_ksa_time(), "warning_count": 0
         })
+        args = message.text.split()
         if len(args) > 1 and args[1].isdigit():
-            referrer_id = int(args[1])
-            if referrer_id != user_id:
-                ref_bonus = get_settings().get("referral_bonus", 2)
-                users_collection.update_one(
-                    {"user_id": referrer_id},
-                    {"$inc": {"points": ref_bonus, "invites": 1}}
-                )
-                try: bot.send_message(referrer_id, f"🎉 ياي! قام صديق بالتسجيل عبر رابطك! تمت إضافة ({ref_bonus}) نقطة لرصيدك بنجاح.")
+            ref_id = int(args[1])
+            if ref_id != user_id:
+                rb = get_settings().get("referral_bonus", 2)
+                users_collection.update_one({"user_id": ref_id}, {"$inc": {"points": rb, "invites": 1}})
+                try: bot.send_message(ref_id, f"🎉 ياي! قام صديق بالتسجيل عبر رابطك! تمت إضافة ({rb}) نقطة لرصيدك بنجاح.")
                 except: pass
     else:
-        users_collection.update_one({"user_id": user_id}, {"$set": {"last_active": datetime.datetime.now()}})
+        users_collection.update_one({"user_id": user_id}, {"$set": {"last_active": get_ksa_time()}})
 
-    welcome_text = f"أهلاً بك يا <b>{first_name}</b> في متجرنا الإلكتروني <b>بوابة الاشتراكات</b>! 🤖✨\n\nتفضل باختيار ما تريد من القائمة التفاعلية بالأسفل 👇"
+    welcome_text = f"أهلاً بك يا <b>{message.from_user.first_name}</b> في متجرنا الإلكتروني <b>بوابة الاشتراكات</b>! 🤖✨\n\nتفضل باختيار ما تريد من القائمة التفاعلية بالأسفل 👇"
     kb = group_keyboard() if message.chat.type in ['group', 'supergroup'] else main_keyboard()
     bot.send_message(message.chat.id, welcome_text, reply_markup=kb)
 
 @bot.callback_query_handler(func=lambda call: call.data == "check_subscription")
 def verify_subscription(call):
-    user_id = call.from_user.id
-    if check_user_subscription(user_id):
+    if check_user_subscription(call.from_user.id):
         bot.answer_callback_query(call.id, "✅ تم التحقق بنجاح! أهلاً بك.")
-        try: bot.delete_message(user_id, call.message.message_id)
+        try: bot.delete_message(call.from_user.id, call.message.message_id)
         except: pass
         send_welcome(call.message)
-    else:
-        bot.answer_callback_query(call.id, "❌ لم تقم بالانضمام للقناة أو المجموعة بعد!", show_alert=True)
-
-# إدارة أزرار الإشعار للمخالفين
-@bot.callback_query_handler(func=lambda call: call.data.startswith('unban_temp_') or call.data.startswith('ban_perm_'))
-def handle_moderation_actions(call):
-    if str(call.from_user.id) != str(ADMIN_ID):
-        bot.answer_callback_query(call.id, "⛔️ للآدمن فقط!", show_alert=True)
-        return
-    
-    parts = call.data.split('_')
-    action = parts[0]
-    
-    if action == 'unban' and len(parts) == 3:
-        target_id = int(parts[2])
-        try:
-            bot.restrict_chat_member(
-                GROUP_USERNAME, target_id, 
-                can_send_messages=True, can_send_media_messages=True, 
-                can_send_other_messages=True, can_add_web_page_previews=True
-            )
-            users_collection.update_one({"user_id": target_id}, {"$set": {"is_muted": False, "mute_until": None, "is_banned": False}})
-            bot.send_message(target_id, "🌟 <b>تم العفو عنك وإلغاء الإيقاف المؤقت في المجموعة!</b>\n\nنرجو منك الالتزام بقوانين المجموعة وعدم تكرار المخالفة. نورتنا من جديد! 🤝")
-            bot.answer_callback_query(call.id, "✅ تم رفع جميع القيود والكتم عن المستخدم في المجموعة.")
-        except Exception as e:
-            bot.answer_callback_query(call.id, f"❌ حدث خطأ: {e}", show_alert=True)
-
-    elif action == 'ban':
-        target_id = int(parts[-1])
-        users_collection.update_one({"user_id": target_id}, {"$set": {"is_banned": True}})
-        try:
-            bot.ban_chat_member(GROUP_USERNAME, target_id, revoke_messages=True)
-            ban_msg = (
-                f"🚫 <b>عذراً، تم حظر حسابك نهائياً من المتجر والمجموعة.</b>\n\n"
-                f"لقد تم اتخاذ هذا القرار الإداري بسبب مخالفة الشروط والتعليمات.\n"
-                f"للتواصل مع الإدارة لطلب رفع الحظر 👇"
-            )
-            markup = InlineKeyboardMarkup()
-            markup.add(InlineKeyboardButton("💬 التواصل مع الإدارة", url="https://t.me/bdallhshay7"))
-            bot.send_message(target_id, ban_msg, reply_markup=markup)
-            bot.answer_callback_query(call.id, "✅ تم تأكيد الحظر ومسح جميع رسائله السابقة.")
-        except Exception as e:
-            bot.answer_callback_query(call.id, f"❌ حدث خطأ: {e}", show_alert=True)
-
-@bot.callback_query_handler(func=lambda call: call.data.startswith('reply_'))
-def handle_reply_button(call):
-    if str(call.from_user.id) == str(ADMIN_ID):
-        target_id = call.data.split('_')[1]
-        admin_states[call.from_user.id] = {'action': 'reply_user', 'target': target_id}
-        bot.send_message(ADMIN_ID, f"✍️ <b>وضع الرد مفعل:</b>\nاكتب رسالتك الآن للعميل: <code>{target_id}</code>\n\n(لإلغاء الأمر أرسل /cancel)")
-        bot.answer_callback_query(call.id)
+    else: bot.answer_callback_query(call.id, "❌ لم تقم بالانضمام للقناة أو المجموعة بعد!", show_alert=True)
 
 # ==========================================
 # --- نظام الإيداع والشحن الآلي المتقدم ---
 # ==========================================
+@bot.callback_query_handler(func=lambda call: call.data == "dep_back_method")
+def back_to_methods(call):
+    user_id = call.from_user.id
+    settings = get_settings()
+    sar_price, yer_price, usdt_pts = settings.get("point_price_sar", 1.0), settings.get("point_price_yer", 100.0), settings.get("points_per_usdt", 15.0)
+    msg = (f"💳 <b>تعليمات الإيداع</b>\n\n📊 <b>سعر الصرف:</b>\n▪️ 1 نقطة = {sar_price:g} SAR\n▪️ 1 نقطة = {yer_price:g} YER\n▪️ 1 USDT = {usdt_pts:g} نقطة\n\n"
+           "⚠️ <b>ملاحظة:</b>\n• جميع عمليات الإيداع عبر Binance أو PayPal غير قابلة للاسترداد بعد تنفيذ عملية الدفع.")
+    markup = InlineKeyboardMarkup(row_width=2)
+    markup.add(
+        InlineKeyboardButton("💳 دفع سعودي", callback_data="dep_method_sar"),
+        InlineKeyboardButton("💳 دفع يمني", callback_data="dep_method_yer"),
+        InlineKeyboardButton("💳 PayPal", callback_data="dep_method_paypal"),
+        InlineKeyboardButton("💳 Binance", callback_data="dep_method_binance")
+    )
+    bot.edit_message_text(msg, chat_id=user_id, message_id=call.message.message_id, parse_mode="HTML", reply_markup=markup)
+
 @bot.callback_query_handler(func=lambda call: call.data.startswith('dep_method_'))
 def handle_deposit_method(call):
     user_id = call.from_user.id
     method = call.data.split('_')[2]
     settings = get_settings()
-    sar_price = settings.get("point_price_sar", 1.0)
-    yer_price = settings.get("point_price_yer", 100.0)
-    usdt_pts = settings.get("points_per_usdt", 15.0)
+    sar_price, yer_price, usdt_pts = settings.get("point_price_sar", 1.0), settings.get("point_price_yer", 100.0), settings.get("points_per_usdt", 15.0)
 
-    min_money = 0; min_pts = 0; currency = ""
-    if method == "sar":
-        min_money = 10.0; min_pts = int(10.0 / sar_price) if sar_price > 0 else 10; currency = "SAR"
-    elif method == "yer":
-        min_money = 2000.0; min_pts = int(2000.0 / yer_price) if yer_price > 0 else 2000; currency = "YER"
-    elif method in ["paypal", "binance"]:
-        min_money = 1.0; min_pts = int(usdt_pts); currency = "USDT"
+    min_money, min_pts, currency = 0, 0, ""
+    if method == "sar": min_money = 10.0; min_pts = int(10.0 / sar_price) if sar_price > 0 else 10; currency = "SAR"
+    elif method == "yer": min_money = 2000.0; min_pts = int(2000.0 / yer_price) if yer_price > 0 else 2000; currency = "YER"
+    elif method in ["paypal", "binance"]: min_money = 1.0; min_pts = int(usdt_pts); currency = "USDT"
 
-    msg = (
-        f"📌 <b>الحد الأدنى للإيداع:</b> {min_pts} نقطة (يُعادل {min_money:g} {currency})\n\n"
-        "أرسل الآن <b>رقماً فقط</b> يمثل إما <b>عدد النقاط</b> التي تريد شراءها، أو <b>المبلغ</b> الذي تريد إيداعه، وسنقوم بحسابه تلقائياً."
-    )
-    user_states[user_id] = {'state': 'waiting_deposit_amount', 'method': method, 'currency': currency, 'min_pts': min_pts, 'min_money': min_money}
-    bot.send_message(user_id, msg, parse_mode="HTML")
-    bot.answer_callback_query(call.id)
+    msg = (f"📌 <b>الحد الأدنى للإيداع:</b> {min_pts} نقطة (يُعادل {min_money:g} {currency})\n\n"
+           "أرسل الآن <b>رقماً فقط</b> يمثل إما <b>عدد النقاط</b> التي تريد شراءها، أو <b>المبلغ</b> الذي تريد إيداعه، وسنقوم بحسابه تلقائياً.")
+    
+    if user_id not in user_states: user_states[user_id] = {}
+    user_states[user_id].update({'state': 'waiting_deposit_amount', 'method': method, 'currency': currency, 'min_pts': min_pts, 'min_money': min_money})
+    
+    markup = InlineKeyboardMarkup().add(InlineKeyboardButton("🔙 رجوع", callback_data="dep_back_method"))
+    bot.edit_message_text(msg, chat_id=user_id, message_id=call.message.message_id, parse_mode="HTML", reply_markup=markup)
 
 @bot.callback_query_handler(func=lambda call: call.data.startswith('dep_val_'))
 def handle_deposit_value(call):
     user_id = call.from_user.id
-    parts = call.data.split('_')
-    method = parts[2]
-    val_type = parts[3]
-    val = float(parts[4])
-
+    parts = call.data.split('_'); method = parts[2]; val_type = parts[3]; val = float(parts[4])
     settings = get_settings()
-    sar_price = settings.get("point_price_sar", 1.0)
-    yer_price = settings.get("point_price_yer", 100.0)
-    usdt_pts = settings.get("points_per_usdt", 15.0)
+    sar_price, yer_price, usdt_pts = settings.get("point_price_sar", 1.0), settings.get("point_price_yer", 100.0), settings.get("points_per_usdt", 15.0)
 
     min_money, min_pts, currency, rate = 0, 0, "", 1
     if method == "sar": min_money, min_pts, currency, rate = 10, int(10/sar_price) if sar_price else 10, "SAR", sar_price
     elif method == "yer": min_money, min_pts, currency, rate = 2000, int(2000/yer_price) if yer_price else 2000, "YER", yer_price
-    elif method in ["paypal", "binance"]: min_money, min_pts, currency, rate = 1, usdt_pts, "USDT", 1/usdt_pts if usdt_pts else 1
+    elif method in ["paypal", "binance"]: min_money, min_pts, currency, rate = 1, int(usdt_pts), "USDT", 1/usdt_pts if usdt_pts else 1
 
-    if val_type == "pts":
-        pts = int(val)
-        money = pts * rate
-    else:
-        money = val
-        pts = int(money / rate) if rate else 0
+    if val_type == "pts": pts = int(val); money = pts * rate
+    else: money = val; pts = int(money / rate) if rate else 0
 
     if money < min_money or pts < min_pts:
-        bot.answer_callback_query(call.id, f"⚠️ عذراً، الحد الأدنى هو {min_money:g} {currency} ({min_pts} نقطة).", show_alert=True)
-        return
+        return bot.answer_callback_query(call.id, f"⚠️ عذراً، الحد الأدنى هو {min_money:g} {currency} ({min_pts} نقطة).", show_alert=True)
 
-    msg = (
-        f"✅ <b>تم الحساب بنجاح:</b>\n"
-        f"▪️ عدد النقاط: <b>{pts}</b> نقطة\n"
-        f"▪️ إجمالي المبلغ المطلوب: <b>{money:g}</b> {currency}\n\n"
-        "يرجى اتباع تعليمات التحويل الموجودة أسفل بيانات الدفع."
-    )
+    msg = (f"✅ <b>تم الحساب بنجاح:</b>\n▪️ عدد النقاط: <b>{pts}</b> نقطة\n▪️ إجمالي المبلغ المطلوب: <b>{money:g}</b> {currency}\n\n"
+           "يرجى اتباع تعليمات التحويل الموجودة أسفل بيانات الدفع.")
     markup = InlineKeyboardMarkup()
-    markup.add(InlineKeyboardButton("✅ متابعة", callback_data=f"dep_cont_{method}_{pts}_{money}"))
+    markup.add(InlineKeyboardButton("✅ متابعة", callback_data=f"dep_cont_{method}_{pts}_{money}"), InlineKeyboardButton("🔙 رجوع", callback_data="dep_back_method"))
     bot.edit_message_text(msg, chat_id=user_id, message_id=call.message.message_id, parse_mode="HTML", reply_markup=markup)
 
 @bot.callback_query_handler(func=lambda call: call.data.startswith('dep_cont_'))
 def handle_deposit_continue(call):
     user_id = call.from_user.id
-    parts = call.data.split('_')
-    method = parts[2]
-    pts = parts[3]
-    money = parts[4]
+    parts = call.data.split('_'); method = parts[2]; pts = parts[3]; money = parts[4]
 
     details = ""
     if method == "sar": details = "💳 <b>الدفع السعودي</b>\nأودع المبلغ إلى الحساب التالي:\n<code>SA123456789</code>"
@@ -330,47 +256,182 @@ def handle_deposit_continue(call):
     elif method == "binance": details = "💳 <b>الدفع عبر Binance</b>\nأرسل المبلغ إلى المعرف التالي:\n<code>BE1234567</code>"
     elif method == "paypal": details = "💳 <b>الدفع عبر PayPal</b>\nأرسل المبلغ إلى الحساب التالي:\n<code>Bay123458</code>"
 
-    msg = f"{details}\n\nيرجى تحويل المبلغ بدقة، ثم الضغط على الزر أدناه لرفع صورة الحوالة."
-    markup = InlineKeyboardMarkup()
-    markup.add(InlineKeyboardButton("📤 رفع إثبات الدفع", callback_data=f"dep_proof_{method}_{pts}_{money}"))
+    msg = f"{details}\n\nيرجى تحويل المبلغ بدقة، ثم اختيار الإجراء المناسب أدناه:"
+    markup = InlineKeyboardMarkup(row_width=2)
+    markup.add(InlineKeyboardButton("📤 رفع إثبات الدفع", callback_data=f"dep_proof_{method}_{pts}_{money}"), InlineKeyboardButton("⏩ بدون إثبات", callback_data=f"dep_noproof_{method}_{pts}_{money}"))
+    markup.add(InlineKeyboardButton("🔙 رجوع", callback_data="dep_back_method"))
     bot.edit_message_text(msg, chat_id=user_id, message_id=call.message.message_id, parse_mode="HTML", reply_markup=markup)
 
 @bot.callback_query_handler(func=lambda call: call.data.startswith('dep_proof_'))
 def handle_deposit_proof(call):
     user_id = call.from_user.id
     parts = call.data.split('_')
-    user_states[user_id] = {'state': 'waiting_deposit_proof', 'method': parts[2], 'pts': parts[3], 'money': parts[4]}
-    bot.send_message(user_id, "📸 <b>يرجى إرسال لقطة شاشة (صورة) لإثبات الدفع الآن:</b>", parse_mode="HTML")
+    
+    # تحديد رقم طلب جديد
+    track_id = f"A{get_ksa_time().strftime('%Y%m%d%H%M%S')}"
+    
+    if user_id not in user_states: user_states[user_id] = {}
+    user_states[user_id].update({'state': 'waiting_deposit_proof', 'method': parts[2], 'pts': parts[3], 'money': parts[4], 'track_id': track_id})
+    
+    msg = bot.send_message(user_id, "📸 <b>يرجى إرسال لقطة شاشة (صورة) لإثبات الدفع الآن:</b>", parse_mode="HTML")
+    track_msg(user_id, msg.message_id)
     bot.answer_callback_query(call.id)
+
+@bot.callback_query_handler(func=lambda call: call.data.startswith('dep_noproof_'))
+def handle_deposit_no_proof(call):
+    user_id = call.from_user.id
+    parts = call.data.split('_'); method = parts[2]; pts = parts[3]; money = parts[4]
+    
+    track_id = f"A{get_ksa_time().strftime('%Y%m%d%H%M%S')}"
+    now_time = get_ksa_time().strftime("%Y-%m-%d %H:%M:%S")
+    
+    msg = bot.send_message(user_id, f"⏳ <b>تم استلام طلبك وهو قيد المراجعة.</b>\n\nرقم الطلب: <code>{track_id}</code>\nسيتم شحن حسابك تلقائيًا فور اعتماد عملية الإيداع.\nيرجى الانتظار.", parse_mode="HTML")
+    track_msg(user_id, msg.message_id)
+    bot.answer_callback_query(call.id)
+
+    if ADMIN_ID:
+        admin_msg = (
+            f"🔔 <b>طلب إيداع/شحن جديد! (بدون إثبات مرفق)</b>\n\n"
+            f"👤 الاسم: {call.from_user.first_name}\n"
+            f"🆔 الآيدي: <code>{user_id}</code>\n"
+            f"💳 وسيلة الدفع: {method.upper()}\n"
+            f"💵 المبلغ: {money}\n"
+            f"🪙 النقاط: {pts}\n"
+            f"⏰ الوقت: {now_time}\n"
+            f"🏷️ رقم الطلب: <code>{track_id}</code>\n"
+        )
+        markup = InlineKeyboardMarkup(row_width=2)
+        markup.add(InlineKeyboardButton("✅ تأكيد", callback_data=f"dep_admin_app_{user_id}_{pts}_{track_id}"), InlineKeyboardButton("❌ رفض", callback_data=f"dep_admin_rej_{user_id}_{track_id}"))
+        markup.add(InlineKeyboardButton("⏳ انتظار", callback_data=f"dep_admin_wait_{user_id}_{track_id}"), InlineKeyboardButton("🔄 طلب إعادة رفع الإثبات", callback_data=f"dep_admin_reup_{user_id}_{track_id}_{method}_{pts}_{money}"))
+        try:
+            ad_msg = bot.send_message(ADMIN_ID, admin_msg, reply_markup=markup, parse_mode="HTML")
+            user_states[user_id]['admin_msg_id'] = ad_msg.message_id
+        except: pass
 
 @bot.callback_query_handler(func=lambda call: call.data.startswith('dep_admin_'))
 def handle_admin_deposit_action(call):
-    if str(call.from_user.id) != str(ADMIN_ID):
-        return bot.answer_callback_query(call.id, "⛔️ للآدمن فقط!", show_alert=True)
+    if str(call.from_user.id) != str(ADMIN_ID): return bot.answer_callback_query(call.id, "⛔️ للآدمن فقط!", show_alert=True)
     
-    parts = call.data.split('_')
-    action = parts[2]
-    target_id = int(parts[3])
+    parts = call.data.split('_'); action = parts[2]; target_id = int(parts[3])
 
     if action == 'app':
         pts = int(parts[4])
         users_collection.update_one({"user_id": target_id}, {"$inc": {"points": pts}})
         try: bot.send_message(target_id, f"🎉 <b>تم اعتماد عملية الدفع بنجاح!</b>\n\nتمت إضافة <b>{pts}</b> نقطة إلى رصيدك. نشكر لك ثقتك بنا! 🚀", parse_mode="HTML")
         except: pass
-        bot.edit_message_caption(f"{call.message.caption}\n\n✅ <b>تم التأكيد وإضافة النقاط.</b>", chat_id=call.message.chat.id, message_id=call.message.message_id, parse_mode="HTML")
+        if call.message.content_type == 'photo': bot.edit_message_caption(f"{call.message.caption}\n\n✅ <b>تم التأكيد وإضافة النقاط.</b>", chat_id=call.message.chat.id, message_id=call.message.message_id, parse_mode="HTML")
+        else: bot.edit_message_text(f"{call.message.text}\n\n✅ <b>تم التأكيد وإضافة النقاط.</b>", chat_id=call.message.chat.id, message_id=call.message.message_id, parse_mode="HTML")
     
     elif action == 'rej':
-        try: bot.send_message(target_id, "⚠️ <b>تعذر اعتماد عملية الدفع.</b>\n\nيرجى مراجعة بيانات التحويل والتأكد من صحة عملية الدفع، ثم إرسال إثبات جديد حتى نتمكن من مراجعة الطلب مرة أخرى.", parse_mode="HTML")
+        try: bot.send_message(target_id, "⚠️ <b>تعذر اعتماد عملية الدفع.</b>\n\nتم رفض الطلب من قبل الإدارة لمشاكل في التحويل.", parse_mode="HTML")
         except: pass
-        bot.edit_message_caption(f"{call.message.caption}\n\n❌ <b>تم رفض الطلب.</b>", chat_id=call.message.chat.id, message_id=call.message.message_id, parse_mode="HTML")
+        if call.message.content_type == 'photo': bot.edit_message_caption(f"{call.message.caption}\n\n❌ <b>تم رفض الطلب.</b>", chat_id=call.message.chat.id, message_id=call.message.message_id, parse_mode="HTML")
+        else: bot.edit_message_text(f"{call.message.text}\n\n❌ <b>تم رفض الطلب.</b>", chat_id=call.message.chat.id, message_id=call.message.message_id, parse_mode="HTML")
 
     elif action == 'wait':
-        track_id = f"A{datetime.datetime.now().strftime('%Y%m%d%H%M%S')}"
-        try: bot.send_message(target_id, f"⏳ <b>تم استلام طلبك وهو قيد المراجعة.</b>\n\nنظرًا لوجود ضغط في الطلبات، يرجى الانتظار حتى يتم التحقق من عملية الدفع.\n\nرقم الطلب: <code>{track_id}</code>", parse_mode="HTML")
+        try: bot.send_message(target_id, f"⏳ <b>تم استلام طلبك وهو قيد المراجعة.</b>\n\nنظرًا لوجود ضغط في الطلبات، يرجى الانتظار حتى يتم التحقق من عملية الدفع.", parse_mode="HTML")
         except: pass
-        bot.edit_message_caption(f"{call.message.caption}\n\n⏳ <b>تم وضع الطلب في الانتظار. رقم الطلب: {track_id}</b>", chat_id=call.message.chat.id, message_id=call.message.message_id, parse_mode="HTML")
+        if call.message.content_type == 'photo': bot.edit_message_caption(f"{call.message.caption}\n\n⏳ <b>تم وضع الطلب في الانتظار.</b>", chat_id=call.message.chat.id, message_id=call.message.message_id, parse_mode="HTML")
+        else: bot.edit_message_text(f"{call.message.text}\n\n⏳ <b>تم وضع الطلب في الانتظار.</b>", chat_id=call.message.chat.id, message_id=call.message.message_id, parse_mode="HTML")
     
+    elif action == 'reup':
+        track_id = parts[4]; method = parts[5]; pts = parts[6]; money = parts[7]
+        try:
+            msg_to_user = "⚠️ <b>تعذر اعتماد عملية الدفع.</b>\n\nيرجى مراجعة بيانات التحويل والتأكد من صحة عملية الدفع، ثم إرسال إثبات جديد حتى نتمكن من مراجعة الطلب مرة أخرى."
+            markup = InlineKeyboardMarkup()
+            markup.add(InlineKeyboardButton("📤 إعادة رفع الإثبات", callback_data=f"dep_user_reup_{track_id}_{method}_{pts}_{money}"))
+            markup.add(InlineKeyboardButton("❌ إلغاء الطلب", callback_data=f"dep_user_cancel_{track_id}"))
+            bot.send_message(target_id, msg_to_user, reply_markup=markup, parse_mode="HTML")
+        except: pass
+        if call.message.content_type == 'photo': bot.edit_message_caption(f"{call.message.caption}\n\n🔄 <b>تم طلب إعادة رفع الإثبات من العميل.</b>", chat_id=call.message.chat.id, message_id=call.message.message_id, parse_mode="HTML")
+        else: bot.edit_message_text(f"{call.message.text}\n\n🔄 <b>تم طلب إعادة رفع الإثبات من العميل.</b>", chat_id=call.message.chat.id, message_id=call.message.message_id, parse_mode="HTML")
+
+    elif action == 'refund':
+        try:
+            bot.send_message(target_id, "💳 سيتم إعادة المبلغ إلى حسابكم تلقائيًا خلال مدة لا تتجاوز 24 ساعة.\n\n🤝 نشكركم على ثقتكم بنا.\nونسعد دائمًا بخدمتكم، ونتطلع لخدمتكم في أي وقت.", parse_mode="HTML")
+            bot.edit_message_text(f"{call.message.text}\n\n✅ <b>تم إرسال رسالة الاسترجاع.</b>", chat_id=call.message.chat.id, message_id=call.message.message_id, parse_mode="HTML")
+        except: pass
+
     bot.answer_callback_query(call.id, "تم التنفيذ.")
+
+@bot.callback_query_handler(func=lambda call: call.data.startswith('dep_user_'))
+def handle_user_reup_cancel(call):
+    user_id = call.from_user.id
+    parts = call.data.split('_')
+    action = parts[2]
+    track_id = parts[3]
+
+    if action == 'reup':
+        method = parts[4]; pts = parts[5]; money = parts[6]
+        if user_id not in user_states: user_states[user_id] = {}
+        user_states[user_id].update({'state': 'waiting_deposit_proof', 'method': method, 'pts': pts, 'money': money, 'track_id': track_id})
+        msg = bot.send_message(user_id, "📸 <b>يرجى إرسال لقطة شاشة (صورة) لإثبات الدفع الآن:</b>", parse_mode="HTML")
+        track_msg(user_id, msg.message_id)
+        bot.answer_callback_query(call.id)
+    
+    elif action == 'cancel':
+        msg = bot.send_message(user_id, "✅ <b>تم إلغاء الطلب بنجاح.</b>\n\nشكرًا لك على استخدام خدماتنا.\n💙 نتمنى لك وقتًا سعيدًا، ويسعدنا دائمًا خدمتك في أي وقت.", parse_mode="HTML")
+        track_msg(user_id, msg.message_id)
+        bot.answer_callback_query(call.id)
+        
+        # تنظيف محادثة العميل من كل رسائل الإيداع السابقة
+        cleanup_deposit_messages(user_id)
+
+        # إشعار الأدمن
+        if ADMIN_ID and user_id in user_states and 'admin_msg_id' in user_states[user_id]:
+            markup = InlineKeyboardMarkup().add(InlineKeyboardButton("📨 إرسال رسالة استرجاع المبلغ", callback_data=f"dep_admin_refund_{user_id}"))
+            try: bot.send_message(ADMIN_ID, f"❌ <b>قام المستخدم بإلغاء هذا الطلب.</b>\nرقم الطلب: <code>{track_id}</code>", reply_to_message_id=user_states[user_id]['admin_msg_id'], reply_markup=markup, parse_mode="HTML")
+            except: pass
+
+# --- استلام الصور (لإثبات الدفع) ---
+@bot.message_handler(content_types=['photo'])
+def handle_photo(message):
+    user_id = message.from_user.id
+    is_admin = (str(user_id) == str(ADMIN_ID))
+
+    if message.chat.type in ['group', 'supergroup']:
+        advanced_group_moderation(message)
+        return
+
+    track_msg(user_id, message.message_id) # تتبع صورة العميل لتنظيفها لاحقاً
+
+    if not is_admin and user_id in user_states and user_states[user_id].get('state') == 'waiting_deposit_proof':
+        state_info = user_states[user_id]
+        method = state_info['method']
+        pts = state_info['pts']
+        money = state_info['money']
+        track_id = state_info.get('track_id', f"A{get_ksa_time().strftime('%Y%m%d%H%M%S')}")
+        
+        msg = bot.send_message(user_id, f"⏳ <b>جاري التحقق من عملية الدفع...</b>\n\nرقم الطلب: <code>{track_id}</code>\nسيتم شحن حسابك تلقائيًا فور اعتماد عملية الإيداع.\nيرجى الانتظار.", parse_mode="HTML")
+        track_msg(user_id, msg.message_id)
+        del user_states[user_id]['state'] # مسح الحالة
+
+        if ADMIN_ID:
+            photo_file_id = message.photo[-1].file_id
+            now_time = get_ksa_time().strftime("%Y-%m-%d %H:%M:%S")
+            admin_msg = (
+                f"🔔 <b>طلب إيداع/شحن جديد!</b>\n\n"
+                f"👤 الاسم: {message.from_user.first_name}\n"
+                f"🆔 الآيدي: <code>{user_id}</code>\n"
+                f"💳 وسيلة الدفع: {method.upper()}\n"
+                f"💵 المبلغ المدفوع: {money}\n"
+                f"🪙 النقاط المطلوبة: {pts}\n"
+                f"⏰ الوقت: {now_time}\n"
+                f"🏷️ رقم الطلب: <code>{track_id}</code>\n"
+            )
+            markup = InlineKeyboardMarkup(row_width=2)
+            markup.add(
+                InlineKeyboardButton("✅ تأكيد", callback_data=f"dep_admin_app_{user_id}_{pts}_{track_id}"),
+                InlineKeyboardButton("❌ رفض", callback_data=f"dep_admin_rej_{user_id}_{track_id}")
+            )
+            markup.add(
+                InlineKeyboardButton("⏳ انتظار", callback_data=f"dep_admin_wait_{user_id}_{track_id}"),
+                InlineKeyboardButton("🔄 طلب إعادة رفع الإثبات", callback_data=f"dep_admin_reup_{user_id}_{track_id}_{method}_{pts}_{money}")
+            )
+            try:
+                ad_msg = bot.send_photo(ADMIN_ID, photo_file_id, caption=admin_msg, reply_markup=markup, parse_mode="HTML")
+                user_states[user_id]['admin_msg_id'] = ad_msg.message_id
+            except: pass
 
 # ==========================================
 # --- نظام الحماية المتقدم للمجموعات ---
@@ -378,8 +439,7 @@ def handle_admin_deposit_action(call):
 @bot.message_handler(func=lambda message: message.chat.type in ['group', 'supergroup'], content_types=['text', 'photo', 'video', 'document', 'audio', 'voice', 'sticker', 'animation'])
 def advanced_group_moderation(message):
     user_id = message.from_user.id
-    if str(user_id) == str(ADMIN_ID):
-        return
+    if str(user_id) == str(ADMIN_ID): return
 
     if message.content_type == 'text' and message.text in [BTN_DAILY, BTN_ACCOUNT]:
         process_group_buttons(message)
@@ -389,66 +449,43 @@ def advanced_group_moderation(message):
     text = message.text or message.caption or ""
     text_lower = text.lower()
 
-    if message.content_type != 'text':
-        violation_type = f"إرسال وسائط ممنوعة ({message.content_type})"
+    if message.content_type != 'text': violation_type = f"إرسال وسائط ممنوعة ({message.content_type})"
 
     if not violation_type:
         now = time.time()
-        if user_id not in user_flood_tracker:
-            user_flood_tracker[user_id] = []
+        if user_id not in user_flood_tracker: user_flood_tracker[user_id] = []
         user_flood_tracker[user_id] = [t for t in user_flood_tracker[user_id] if now - t < 5]
         user_flood_tracker[user_id].append(now)
-        
-        if len(user_flood_tracker[user_id]) >= 4:
-            violation_type = "إرسال رسائل سريعة (فلود / Flood)"
+        if len(user_flood_tracker[user_id]) >= 4: violation_type = "إرسال رسائل سريعة (فلود / Flood)"
 
     if not violation_type and text:
         if user_id in user_last_msg:
             if user_last_msg[user_id]['text'] == text_lower:
                 user_last_msg[user_id]['count'] += 1
-                if user_last_msg[user_id]['count'] >= 3:
-                    violation_type = "تكرار نفس الرسالة (سبام / Spam)"
-            else:
-                user_last_msg[user_id] = {'text': text_lower, 'count': 1}
-        else:
-            user_last_msg[user_id] = {'text': text_lower, 'count': 1}
+                if user_last_msg[user_id]['count'] >= 3: violation_type = "تكرار نفس الرسالة (سبام / Spam)"
+            else: user_last_msg[user_id] = {'text': text_lower, 'count': 1}
+        else: user_last_msg[user_id] = {'text': text_lower, 'count': 1}
 
     link_pattern = r'(http[s]?://|t\.me/|@\w+|\.com|\.net|\.org|\.vip|\.link|\.me)'
-    if not violation_type and re.search(link_pattern, text_lower):
-        violation_type = "إرسال روابط أو معرفات خارجية"
+    if not violation_type and re.search(link_pattern, text_lower): violation_type = "إرسال روابط أو معرفات خارجية"
 
     if not violation_type and text:
         clean_text = re.sub(r'[^\w\s]', '', text_lower)
         clean_words = re.sub(r'(.)\1+', r'\1', clean_text).split()
-        
-        bad_words = [
-            "سكس", "نيك", "قحب", "شرمط", "شرمو", "مخنث", "ديوث", "طيز", "زبي", "كسك", 
-            "سناب", "تعارف", "sex", "porn", "fuck", "nude", "ممحون", "شواذ", "كلب", "حيوان", 
-            "زبال", "كلاب", "قحاب", "ورع", "فحل", "موجب", "سالب", "زبك", "كسي"
-        ]
-        
+        bad_words = ["سكس", "نيك", "قحب", "شرمط", "شرمو", "مخنث", "ديوث", "طيز", "زبي", "كسك", "سناب", "تعارف", "sex", "porn", "fuck", "nude", "ممحون", "شواذ", "كلب", "حيوان", "زبال", "كلاب", "قحاب", "ورع", "فحل", "موجب", "سالب", "زبك", "كسي"]
         for word in clean_words:
-            if any(bad in word for bad in bad_words):
-                violation_type = "ألفاظ مسيئة أو غير أخلاقية"
-                break
-        
+            if any(bad in word for bad in bad_words): violation_type = "ألفاظ مسيئة أو غير أخلاقية"; break
         if not violation_type:
             no_space_text = re.sub(r'[\W_0-9]+', '', text_lower)
             severe_bad = ["شرموط", "قحبه", "ديوث", "مخنث"]
-            if any(bad in no_space_text for bad in severe_bad):
-                violation_type = "ألفاظ مسيئة (متحايل عليها)"
-            
-            if re.search(r'س[\s\W_]*ك[\s\W_]*س', text_lower) or re.search(r'ن[\s\W_]*ي[\s\W_]*ك', text_lower):
-                violation_type = "ألفاظ مسيئة (متحايل عليها)"
+            if any(bad in no_space_text for bad in severe_bad): violation_type = "ألفاظ مسيئة (متحايل عليها)"
+            if re.search(r'س[\s\W_]*ك[\s\W_]*س', text_lower) or re.search(r'ن[\s\W_]*ي[\s\W_]*ك', text_lower): violation_type = "ألفاظ مسيئة (متحايل عليها)"
 
     if not violation_type and text:
         no_space = text.replace(" ", "")
-        if re.search(r'(?![هخ])(.)\1{5,}', no_space):
-            violation_type = "محتوى عشوائي (تكرار حروف عبثي)"
-        elif any(len(word) > 15 for word in text.split()):
-            violation_type = "رسالة عشوائية (أحرف متلاصقة بلا معنى)"
-        elif re.search(r'[bcdfghjklmnpqrstvwxyzBCDFGHJKLMNPQRSTVWXYZ]{6,}', text):
-            violation_type = "رسالة عشوائية (أحرف إنجليزية مبهمة)"
+        if re.search(r'(?![هخ])(.)\1{5,}', no_space): violation_type = "محتوى عشوائي (تكرار حروف عبثي)"
+        elif any(len(word) > 15 for word in text.split()): violation_type = "رسالة عشوائية (أحرف متلاصقة بلا معنى)"
+        elif re.search(r'[bcdfghjklmnpqrstvwxyzBCDFGHJKLMNPQRSTVWXYZ]{6,}', text): violation_type = "رسالة عشوائية (أحرف إنجليزية مبهمة)"
 
     if violation_type:
         try: bot.delete_message(message.chat.id, message.message_id)
@@ -456,55 +493,26 @@ def advanced_group_moderation(message):
         
         user = users_collection.find_one({"user_id": user_id})
         warnings = user.get("warning_count", 0) if user else 0
-        time_str = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        time_str = get_ksa_time().strftime("%Y-%m-%d %H:%M:%S")
         content_display = text if message.content_type == 'text' else f"[{message.content_type}]"
         
         if warnings >= 1:
             users_collection.update_one({"user_id": user_id}, {"$set": {"is_banned": True}})
             try: bot.ban_chat_member(message.chat.id, user_id, revoke_messages=True)
             except: pass
-            
             if ADMIN_ID:
-                admin_alert = (
-                    f"🚨 <b>تم الحظر النهائي والطرد!</b>\n\n"
-                    f"👤 الاسم: {message.from_user.first_name}\n"
-                    f"🆔 الآيدي: <code>{user_id}</code>\n"
-                    f"📌 نوع المخالفة: <b>{violation_type}</b>\n"
-                    f"💬 المحتوى:\n<code>{content_display}</code>\n"
-                    f"⏰ الوقت: {time_str}\n\n"
-                    f"⚡️ <i>الإجراء: تم الحظر النهائي ومسح جميع رسائله السابقة من المجموعة.</i>"
-                )
-                try: bot.send_message(ADMIN_ID, admin_alert)
+                try: bot.send_message(ADMIN_ID, f"🚨 <b>تم الحظر النهائي والطرد!</b>\n\n👤 الاسم: {message.from_user.first_name}\n🆔 الآيدي: <code>{user_id}</code>\n📌 نوع المخالفة: <b>{violation_type}</b>\n💬 المحتوى:\n<code>{content_display}</code>\n⏰ الوقت: {time_str}\n\n⚡️ <i>الإجراء: تم الحظر النهائي ومسح جميع رسائله السابقة من المجموعة.</i>")
                 except: pass
         else:
             until_date = int(time.time()) + 7200
-            users_collection.update_one(
-                 {"user_id": user_id}, 
-                 {"$inc": {"warning_count": 1}, "$set": {"is_muted": True, "mute_until": until_date}}
-            )
-
+            users_collection.update_one({"user_id": user_id}, {"$inc": {"warning_count": 1}, "$set": {"is_muted": True, "mute_until": until_date}})
             try: bot.restrict_chat_member(message.chat.id, user_id, until_date=until_date, can_send_messages=False)
             except: pass
-
             if ADMIN_ID:
-                admin_alert = (
-                    f"🚨 <b>اكتشاف مخالفة وتم الكتم!</b>\n\n"
-                    f"👤 الاسم: {message.from_user.first_name}\n"
-                    f"🆔 الآيدي: <code>{user_id}</code>\n"
-                    f"📌 نوع المخالفة: <b>{violation_type}</b>\n"
-                    f"💬 المحتوى:\n<code>{content_display}</code>\n"
-                    f"⏰ الوقت: {time_str}\n\n"
-                    f"⚡️ <i>الإجراء: تم الحذف والكتم لمدة ساعتين في المجموعة (دون حظره من البوت).</i>"
-                )
-                markup = InlineKeyboardMarkup()
-                markup.row(
-                    InlineKeyboardButton("🔓 رفع الكتم", callback_data=f"unban_temp_{user_id}"),
-                    InlineKeyboardButton("⛔ حظر نهائي وطرد", callback_data=f"ban_perm_revoke_{user_id}")
-                )
-                try: bot.send_message(ADMIN_ID, admin_alert, reply_markup=markup)
+                markup = InlineKeyboardMarkup().row(InlineKeyboardButton("🔓 رفع الكتم", callback_data=f"unban_temp_{user_id}"), InlineKeyboardButton("⛔ حظر نهائي وطرد", callback_data=f"ban_perm_revoke_{user_id}"))
+                try: bot.send_message(ADMIN_ID, f"🚨 <b>اكتشاف مخالفة وتم الكتم!</b>\n\n👤 الاسم: {message.from_user.first_name}\n🆔 الآيدي: <code>{user_id}</code>\n📌 نوع المخالفة: <b>{violation_type}</b>\n💬 المحتوى:\n<code>{content_display}</code>\n⏰ الوقت: {time_str}\n\n⚡️ <i>الإجراء: تم الحذف والكتم لمدة ساعتين في المجموعة (دون حظره من البوت).</i>", reply_markup=markup)
                 except: pass
 
-# === تنفيذ الأزرار داخل المجموعة ===
 def process_group_buttons(message):
     user_id = message.from_user.id
     user = users_collection.find_one({"user_id": user_id})
@@ -521,8 +529,8 @@ def process_group_buttons(message):
         return
 
     if text == BTN_DAILY:
-        today_str = datetime.datetime.now().strftime("%Y-%m-%d")
-        yesterday_str = (datetime.datetime.now() - datetime.timedelta(days=1)).strftime("%Y-%m-%d")
+        today_str = get_ksa_time().strftime("%Y-%m-%d")
+        yesterday_str = (get_ksa_time() - datetime.timedelta(days=1)).strftime("%Y-%m-%d")
         last_date = user.get("last_collected_date")
         streak = user.get("streak", 0)
 
@@ -538,66 +546,14 @@ def process_group_buttons(message):
         new_points = user.get("points", 0) + pts_added
         users_collection.update_one({"user_id": user_id}, {"$inc": {"points": pts_added}, "$set": {"last_collected_date": today_str, "streak": streak}})
         
-        daily_msg = (
-            f"🎉 <b>تسجيل حضور ناجح لـ {message.from_user.first_name}!</b>\n"
-            f"═══════════════════════\n\n"
-            f"💎 +{pts_added} {'عملة' if is_seventh_day else 'وحدة نقدية'} |\n"
-            f"💰 الرصيد: {new_points} {'عملة' if is_seventh_day else 'وحدة نقدية'} |\n"
-            f"📅 سلسلة الأيام: {streak} {'أيام' if is_seventh_day else 'يوم'}\n"
-            f"═══════════════════════"
-        )
-        if is_seventh_day:
-            daily_msg += "\n\n🔥 <b>سلسلة 7 أيام!</b>\n\nلقد حصلت على 2 عملة بدلاً من 1 عملة!"
-
+        daily_msg = f"🎉 <b>تسجيل حضور ناجح لـ {message.from_user.first_name}!</b>\n═══════════════════════\n\n💎 +{pts_added} {'عملة' if is_seventh_day else 'وحدة نقدية'} |\n💰 الرصيد: {new_points} {'عملة' if is_seventh_day else 'وحدة نقدية'} |\n📅 سلسلة الأيام: {streak} {'أيام' if is_seventh_day else 'يوم'}\n═══════════════════════"
+        if is_seventh_day: daily_msg += "\n\n🔥 <b>سلسلة 7 أيام!</b>\n\nلقد حصلت على 2 عملة بدلاً من 1 عملة!"
         resp = bot.send_message(message.chat.id, daily_msg, parse_mode="HTML")
         delayed_delete(message.chat.id, message.message_id, resp.message_id, 3.0)
 
     elif text == BTN_ACCOUNT:
-        points = user.get("points", 0)
-        account_msg = f"👤 <b>الاسم:</b> {user.get('first_name', 'غير معروف')}\n🆔 <b>رقم الحساب:</b> <code>{user_id}</code>\n⭐ <b>الرصيد:</b> {points} نقطة\n🤝 <b>المدعوين:</b> {user.get('invites', 0)}"
-        resp = bot.send_message(message.chat.id, account_msg, parse_mode="HTML")
+        resp = bot.send_message(message.chat.id, f"👤 <b>الاسم:</b> {user.get('first_name', 'غير معروف')}\n🆔 <b>رقم الحساب:</b> <code>{user_id}</code>\n⭐ <b>الرصيد:</b> {user.get('points', 0)} نقطة\n🤝 <b>المدعوين:</b> {user.get('invites', 0)}", parse_mode="HTML")
         delayed_delete(message.chat.id, message.message_id, resp.message_id, 3.0)
-
-# --- استلام الصور (لإثبات الدفع) ---
-@bot.message_handler(content_types=['photo'])
-def handle_photo(message):
-    user_id = message.from_user.id
-    is_admin = (str(user_id) == str(ADMIN_ID))
-
-    if message.chat.type in ['group', 'supergroup']:
-        advanced_group_moderation(message)
-        return
-
-    if not is_admin and user_id in user_states and user_states[user_id].get('state') == 'waiting_deposit_proof':
-        state_info = user_states[user_id]
-        method = state_info['method']
-        pts = state_info['pts']
-        money = state_info['money']
-        
-        bot.send_message(user_id, "⏳ <b>جاري التحقق من عملية الدفع...</b>\n\nسيتم شحن حسابك تلقائيًا فور اعتماد عملية الإيداع.\nيرجى الانتظار.", parse_mode="HTML")
-        del user_states[user_id]
-
-        if ADMIN_ID:
-            photo_file_id = message.photo[-1].file_id
-            now_time = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-            admin_msg = (
-                f"🔔 <b>طلب إيداع/شحن جديد!</b>\n\n"
-                f"👤 الاسم: {message.from_user.first_name}\n"
-                f"🆔 الآيدي: <code>{user_id}</code>\n"
-                f"💳 وسيلة الدفع: {method.upper()}\n"
-                f"💵 المبلغ المدفوع: {money}\n"
-                f"🪙 النقاط المطلوبة: {pts}\n"
-                f"⏰ الوقت: {now_time}\n"
-            )
-            markup = InlineKeyboardMarkup(row_width=2)
-            markup.add(
-                InlineKeyboardButton("✅ تأكيد", callback_data=f"dep_admin_app_{user_id}_{pts}"),
-                InlineKeyboardButton("❌ رفض", callback_data=f"dep_admin_rej_{user_id}")
-            )
-            markup.add(InlineKeyboardButton("⏳ انتظار", callback_data=f"dep_admin_wait_{user_id}"))
-            
-            try: bot.send_photo(ADMIN_ID, photo_file_id, caption=admin_msg, reply_markup=markup, parse_mode="HTML")
-            except: pass
 
 # --- معالجة النصوص (العملاء في الخاص والإدارة) ---
 @bot.message_handler(func=lambda message: message.chat.type == 'private')
@@ -606,27 +562,27 @@ def handle_private_text(message):
     text = message.text
     is_admin = (str(user_id) == str(ADMIN_ID))
 
-    # التقاط حالة إدخال مبلغ الإيداع للعميل
+    track_msg(user_id, message.message_id) # تتبع رسائل العميل للحذف الذكي
+
     if not is_admin and user_id in user_states and user_states[user_id].get('state') == 'waiting_deposit_amount':
         if text in [BTN_YT, BTN_SPOTIFY, BTN_GEMINI, BTN_DAILY, BTN_DEPOSIT, BTN_CONTACT, BTN_ACCOUNT, BTN_INVITE, BTN_HELP, BTN_GUIDE, BTN_MAIN]:
-            del user_states[user_id]
+            del user_states[user_id]['state']
         else:
-            state_info = user_states[user_id]
-            try:
-                val = float(text)
+            try: val = float(text.replace(',', '.'))
             except:
-                bot.send_message(user_id, "⚠️ يرجى إرسال أرقام فقط للحساب.")
+                msg = bot.send_message(user_id, "⚠️ يرجى إرسال أرقام فقط للحساب.")
+                track_msg(user_id, msg.message_id)
                 return
             
-            method = state_info['method']
-            currency = state_info['currency']
-            markup = InlineKeyboardMarkup(row_width=2)
-            markup.add(
+            method = user_states[user_id]['method']
+            currency = user_states[user_id]['currency']
+            markup = InlineKeyboardMarkup(row_width=2).add(
                 InlineKeyboardButton(f"🪙 {val:g} نقطة", callback_data=f"dep_val_{method}_pts_{val:g}"),
                 InlineKeyboardButton(f"💵 {val:g} {currency}", callback_data=f"dep_val_{method}_mon_{val:g}")
             )
-            bot.send_message(user_id, f"الرقم المدخل: <b>{val:g}</b>\n\nهل هذا الرقم يمثل عدد النقاط المطلوبة أم المبلغ بـ {currency}؟", reply_markup=markup, parse_mode="HTML")
-            del user_states[user_id]
+            msg = bot.send_message(user_id, f"الرقم المدخل: <b>{val:g}</b>\n\nهل هذا الرقم يمثل عدد النقاط المطلوبة أم المبلغ بـ {currency}؟", reply_markup=markup, parse_mode="HTML")
+            track_msg(user_id, msg.message_id)
+            del user_states[user_id]['state']
             return
 
     if is_admin and user_id in admin_states:
@@ -651,17 +607,13 @@ def handle_private_text(message):
                 try: bot.send_message(target_id, "🎉 <b>أهلاً بعودتك!</b>\n\nيسعدنا إخبارك بأنه تم رفع الحظر والقيود عن حسابك بنجاح. يمكنك الآن العودة للاستمتاع بخدمات متجرنا والتفاعل في مجموعتنا. ✨\n\nنرجو منك الالتزام بالقوانين لضمان تجربة رائعة للجميع. نورتنا! 🤝", parse_mode="HTML")
                 except: pass
             elif action == 'add_points':
-                parts = text.split()
-                target_id = int(parts[0])
-                pts = int(parts[1])
+                parts = text.split(); target_id = int(parts[0]); pts = int(parts[1])
                 users_collection.update_one({"user_id": target_id}, {"$inc": {"points": pts}})
                 bot.send_message(user_id, f"✅ تمت إضافة {pts} نقطة للعميل {target_id}")
                 try: bot.send_message(target_id, f"🎉 <b>تم شحن حسابك بـ {pts} نقطة!</b>")
                 except: pass
             elif action == 'remove_points':
-                parts = text.split()
-                target_id = int(parts[0])
-                pts = int(parts[1])
+                parts = text.split(); target_id = int(parts[0]); pts = int(parts[1])
                 users_collection.update_one({"user_id": target_id}, {"$inc": {"points": -pts}})
                 bot.send_message(user_id, f"✅ تم سحب {pts} نقطة من العميل {target_id}")
             elif action == 'reply_user_step1':
@@ -673,48 +625,10 @@ def handle_private_text(message):
                 bot.send_message(target_id, text)
                 bot.send_message(user_id, "✅ تم إرسال رسالتك للعميل بنجاح.", reply_markup=admin_keyboard())
             elif action == 'broadcast':
-                users = users_collection.find({})
-                count = 0
-                for u in users:
-                    try: bot.send_message(u['user_id'], text); count += 1
+                for u in users_collection.find({}):
+                    try: bot.send_message(u['user_id'], text)
                     except: pass
-                bot.send_message(user_id, f"✅ تمت الإذاعة بنجاح لـ {count} مستخدم.", reply_markup=admin_keyboard())
-            
-            # --- تعديل أسعار الخدمات ---
-            elif action == 'change_price_yt':
-                new_price = int(text)
-                settings_collection.update_one({"_id": "bot_settings"}, {"$set": {"price_yt": new_price}})
-                bot.send_message(user_id, f"✅ تم تغيير سعر خدمة يوتيوب إلى {new_price} نقطة.", reply_markup=admin_keyboard())
-                try:
-                    channel_msg = f"📢 <b>تحديث مميز في أسعار الخدمات! 📺</b>\n\nتم تعديل سعر اشتراك <b>يوتيوب بريميوم</b> ليصبح فقط <b>{new_price}</b> نقطة!\nسارع بطلب تفعيلك الفوري الآن عبر البوت 👇"
-                    markup = InlineKeyboardMarkup().add(InlineKeyboardButton("🛍️ اطلب الآن ⚡", url=f"https://t.me/{bot.get_me().username}"))
-                    bot.send_message(CHANNEL_USERNAME, channel_msg, reply_markup=markup)
-                except: pass
-
-            elif action == 'change_price_spotify':
-                new_price = int(text)
-                settings_collection.update_one({"_id": "bot_settings"}, {"$set": {"price_spotify": new_price}})
-                bot.send_message(user_id, f"✅ تم تغيير سعر خدمة سبوتيفاي إلى {new_price} نقطة.", reply_markup=admin_keyboard())
-                try:
-                    channel_msg = f"📢 <b>تحديث مميز في أسعار الخدمات! 🎵</b>\n\nتم تعديل سعر اشتراك <b>سبوتيفاي بريميوم</b> ليصبح فقط <b>{new_price}</b> نقطة!\nسارع بطلب تفعيلك الفوري الآن عبر البوت 👇"
-                    markup = InlineKeyboardMarkup().add(InlineKeyboardButton("🛍️ اطلب الآن ⚡", url=f"https://t.me/{bot.get_me().username}"))
-                    bot.send_message(CHANNEL_USERNAME, channel_msg, reply_markup=markup)
-                except: pass
-
-            elif action == 'change_price_gemini':
-                new_price = int(text)
-                settings_collection.update_one({"_id": "bot_settings"}, {"$set": {"price_gemini": new_price}})
-                bot.send_message(user_id, f"✅ تم تغيير سعر خدمة جيميناي إلى {new_price} نقطة.", reply_markup=admin_keyboard())
-                try:
-                    channel_msg = f"📢 <b>تحديث مميز في أسعار الخدمات! ✨</b>\n\nتم تعديل سعر اشتراك <b>جيميناي برو</b> ليصبح فقط <b>{new_price}</b> نقطة!\nسارع بطلب تفعيلك الفوري الآن عبر البوت 👇"
-                    markup = InlineKeyboardMarkup().add(InlineKeyboardButton("🛍️ اطلب الآن ⚡", url=f"https://t.me/{bot.get_me().username}"))
-                    bot.send_message(CHANNEL_USERNAME, channel_msg, reply_markup=markup)
-                except: pass
-
-            elif action == 'change_referral':
-                new_ref = int(text)
-                settings_collection.update_one({"_id": "bot_settings"}, {"$set": {"referral_bonus": new_ref}})
-                bot.send_message(user_id, f"✅ تم تغيير مكافأة الدعوة إلى {new_ref} نقطة.", reply_markup=admin_keyboard())
+                bot.send_message(user_id, f"✅ تمت الإذاعة بنجاح.", reply_markup=admin_keyboard())
             
             # --- تعديل أسعار الشحن من لوحة الإدارة ---
             elif action == 'set_price_sar':
@@ -730,6 +644,23 @@ def handle_private_text(message):
                 settings_collection.update_one({"_id": "bot_settings"}, {"$set": {"points_per_usdt": new_val}})
                 bot.send_message(user_id, f"✅ تم التحديث. 1 USDT يعادل الآن {new_val} نقطة.", reply_markup=admin_keyboard())
 
+            elif action == 'change_price_yt':
+                new_price = int(text)
+                settings_collection.update_one({"_id": "bot_settings"}, {"$set": {"price_yt": new_price}})
+                bot.send_message(user_id, f"✅ تم تغيير سعر خدمة يوتيوب إلى {new_price} نقطة.", reply_markup=admin_keyboard())
+            elif action == 'change_price_spotify':
+                new_price = int(text)
+                settings_collection.update_one({"_id": "bot_settings"}, {"$set": {"price_spotify": new_price}})
+                bot.send_message(user_id, f"✅ تم تغيير سعر خدمة سبوتيفاي إلى {new_price} نقطة.", reply_markup=admin_keyboard())
+            elif action == 'change_price_gemini':
+                new_price = int(text)
+                settings_collection.update_one({"_id": "bot_settings"}, {"$set": {"price_gemini": new_price}})
+                bot.send_message(user_id, f"✅ تم تغيير سعر خدمة جيميناي إلى {new_price} نقطة.", reply_markup=admin_keyboard())
+            elif action == 'change_referral':
+                new_ref = int(text)
+                settings_collection.update_one({"_id": "bot_settings"}, {"$set": {"referral_bonus": new_ref}})
+                bot.send_message(user_id, f"✅ تم تغيير مكافأة الدعوة إلى {new_ref} نقطة.", reply_markup=admin_keyboard())
+
             elif action == 'check_user':
                 target_id = int(text)
                 target_user = users_collection.find_one({"user_id": target_id})
@@ -737,14 +668,10 @@ def handle_private_text(message):
                     u_name = target_user.get("first_name", "غير معروف")
                     u_pts = target_user.get("points", 0)
                     u_invites = target_user.get("invites", 0)
-                    u_banned = target_user.get("is_banned", False)
-                    u_muted = target_user.get("is_muted", False)
-                    
                     status_str = []
-                    if u_banned: status_str.append("محظور 🚫")
-                    elif u_muted: status_str.append("مكتوم 🔇")
+                    if target_user.get("is_banned"): status_str.append("محظور 🚫")
+                    elif target_user.get("is_muted"): status_str.append("مكتوم 🔇")
                     else: status_str.append("نشط ✅")
-                    
                     bot.send_message(user_id, f"🔍 <b>نتيجة الاستعلام:</b>\n\n👤 <b>الاسم:</b> {u_name}\n🆔 <b>الآيدي:</b> <code>{target_id}</code>\n⭐ <b>الرصيد:</b> {u_pts} نقطة\n🤝 <b>المدعوين:</b> {u_invites} أشخاص\nحالة الحساب: {', '.join(status_str)}", reply_markup=admin_keyboard())
                 else: bot.send_message(user_id, "❌ لم يتم العثور على هذا المستخدم في قاعدة البيانات.", reply_markup=admin_keyboard())
         except Exception as e:
@@ -753,80 +680,38 @@ def handle_private_text(message):
         return
 
     if is_admin:
-        if text == "🚫 حظر مستخدم":
-            admin_states[user_id] = {'action': 'ban_user'}; bot.send_message(user_id, "أرسل الآن ID المستخدم ليتم حظره:\n(أرسل /cancel للإلغاء)"); return
-        elif text == "✅ فك حظر":
-            admin_states[user_id] = {'action': 'unban_user'}; bot.send_message(user_id, "أرسل الآن ID المستخدم لفك حظره ورفع الكتم:\n(أرسل /cancel للإلغاء)"); return
-        elif text == "➕ إضافة نقاط":
-            admin_states[user_id] = {'action': 'add_points'}; bot.send_message(user_id, "أرسل ID العميل ثم مسافة ثم عدد النقاط.\nمثال: <code>123456789 50</code>", parse_mode="HTML"); return
-        elif text == "➖ سحب نقاط":
-            admin_states[user_id] = {'action': 'remove_points'}; bot.send_message(user_id, "أرسل ID العميل ثم مسافة ثم النقاط المسحوبة.\nمثال: <code>123456789 15</code>", parse_mode="HTML"); return
-        elif text == "📩 رد/رسالة لمستخدم":
-            admin_states[user_id] = {'action': 'reply_user_step1'}; bot.send_message(user_id, "أرسل أولاً ID العميل الذي تريد مراسلته:"); return
-        elif text == "📢 إذاعة للجميع":
-            admin_states[user_id] = {'action': 'broadcast'}; bot.send_message(user_id, "أرسل الإعلان الآن وسيتم توزيعه لجميع المستخدمين:"); return
-        elif text == "📺 سعر يوتيوب":
-            admin_states[user_id] = {'action': 'change_price_yt'}; bot.send_message(user_id, "أرسل السعر الجديد لخدمة يوتيوب (رقم فقط):"); return
-        elif text == "🎵 سعر سبوتيفاي":
-            admin_states[user_id] = {'action': 'change_price_spotify'}; bot.send_message(user_id, "أرسل السعر الجديد لخدمة سبوتيفاي (رقم فقط):"); return
-        elif text == "✨ سعر جيميناي":
-            admin_states[user_id] = {'action': 'change_price_gemini'}; bot.send_message(user_id, "أرسل السعر الجديد لخدمة جيميناي (رقم فقط):"); return
-        elif text == "🎁 تعديل مكافأة الدعوة":
-            admin_states[user_id] = {'action': 'change_referral'}; bot.send_message(user_id, "أرسل نقاط المكافأة الجديدة لدعوة الأصدقاء (رقم فقط):"); return
-        
-        # أزرار الإيداع الجديدة
-        elif text == "⚙️ تعديل سعر النقطة (SAR)":
-            admin_states[user_id] = {'action': 'set_price_sar'}
-            bot.send_message(user_id, "أرسل سعر النقطة الواحدة بالريال السعودي (مثال: 1 أو 0.5):")
-            return
-        elif text == "⚙️ تعديل سعر النقطة (YER)":
-            admin_states[user_id] = {'action': 'set_price_yer'}
-            bot.send_message(user_id, "أرسل سعر النقطة الواحدة بالريال اليمني (مثال: 100):")
-            return
-        elif text == "⚙️ تعديل سعر النقطة (USDT)":
-            admin_states[user_id] = {'action': 'set_price_usdt'}
-            bot.send_message(user_id, "أرسل عدد النقاط التي يحصل عليها العميل مقابل كل 1 USDT (مثال: 15):")
-            return
-
-        elif text == "🔍 استعلام عن مستخدم":
-            admin_states[user_id] = {'action': 'check_user'}; bot.send_message(user_id, "أرسل ID العميل للاستعلام عن بياناته وحسابه:"); return
+        if text == "🚫 حظر مستخدم": admin_states[user_id] = {'action': 'ban_user'}; bot.send_message(user_id, "أرسل الآن ID المستخدم ليتم حظره:\n(أرسل /cancel للإلغاء)"); return
+        elif text == "✅ فك حظر": admin_states[user_id] = {'action': 'unban_user'}; bot.send_message(user_id, "أرسل الآن ID المستخدم لفك حظره ورفع الكتم:\n(أرسل /cancel للإلغاء)"); return
+        elif text == "➕ إضافة نقاط": admin_states[user_id] = {'action': 'add_points'}; bot.send_message(user_id, "أرسل ID العميل ثم مسافة ثم عدد النقاط.\nمثال: <code>123456789 50</code>", parse_mode="HTML"); return
+        elif text == "➖ سحب نقاط": admin_states[user_id] = {'action': 'remove_points'}; bot.send_message(user_id, "أرسل ID العميل ثم مسافة ثم النقاط المسحوبة.\nمثال: <code>123456789 15</code>", parse_mode="HTML"); return
+        elif text == "📩 رد/رسالة لمستخدم": admin_states[user_id] = {'action': 'reply_user_step1'}; bot.send_message(user_id, "أرسل أولاً ID العميل الذي تريد مراسلته:"); return
+        elif text == "📢 إذاعة للجميع": admin_states[user_id] = {'action': 'broadcast'}; bot.send_message(user_id, "أرسل الإعلان الآن وسيتم توزيعه لجميع المستخدمين:"); return
+        elif text == "📺 سعر يوتيوب": admin_states[user_id] = {'action': 'change_price_yt'}; bot.send_message(user_id, "أرسل السعر الجديد لخدمة يوتيوب (رقم فقط):"); return
+        elif text == "🎵 سعر سبوتيفاي": admin_states[user_id] = {'action': 'change_price_spotify'}; bot.send_message(user_id, "أرسل السعر الجديد لخدمة سبوتيفاي (رقم فقط):"); return
+        elif text == "✨ سعر جيميناي": admin_states[user_id] = {'action': 'change_price_gemini'}; bot.send_message(user_id, "أرسل السعر الجديد لخدمة جيميناي (رقم فقط):"); return
+        elif text == "🎁 تعديل مكافأة الدعوة": admin_states[user_id] = {'action': 'change_referral'}; bot.send_message(user_id, "أرسل نقاط المكافأة الجديدة لدعوة الأصدقاء (رقم فقط):"); return
+        elif text == "⚙️ تعديل سعر النقطة (SAR)": admin_states[user_id] = {'action': 'set_price_sar'}; bot.send_message(user_id, "أرسل سعر النقطة الواحدة بالريال السعودي (مثال: 1 أو 0.5):"); return
+        elif text == "⚙️ تعديل سعر النقطة (YER)": admin_states[user_id] = {'action': 'set_price_yer'}; bot.send_message(user_id, "أرسل سعر النقطة الواحدة بالريال اليمني (مثال: 100):"); return
+        elif text == "⚙️ تعديل سعر النقطة (USDT)": admin_states[user_id] = {'action': 'set_price_usdt'}; bot.send_message(user_id, "أرسل عدد النقاط التي يحصل عليها العميل مقابل كل 1 USDT (مثال: 15):"); return
+        elif text == "🔍 استعلام عن مستخدم": admin_states[user_id] = {'action': 'check_user'}; bot.send_message(user_id, "أرسل ID العميل للاستعلام عن بياناته وحسابه:"); return
         elif text == "📊 إحصائيات المستخدمين":
             all_users = list(users_collection.find({}))
-            total = len(all_users)
-            now = datetime.datetime.now()
-            msg = f"📊 <b>إحصائيات مستخدمي البوت:</b>\n\n👥 <b>العدد الإجمالي:</b> {total} مستخدم\n\n<b>قائمة المشتركين:</b>\n"
+            msg = f"📊 <b>إحصائيات مستخدمي البوت:</b>\n\n👥 <b>العدد الإجمالي:</b> {len(all_users)} مستخدم\n\n<b>قائمة المشتركين:</b>\n"
             for u in all_users[:30]:
-                u_name = u.get('first_name', 'مستخدم')
-                u_id = u.get('user_id')
-                u_pts = u.get('points', 0)
-                u_date = u.get('join_date', 'غير متوفر')
-                last_act = u.get('last_active', now)
-                
-                diff_days = (now - last_act).days if isinstance(last_act, datetime.datetime) else 0
-                if diff_days <= 3: status_dot = "🟢"
-                elif diff_days <= 7: status_dot = "🟡"
-                else: status_dot = "🔴"
-                
-                msg += f"{status_dot} {u_name} | <code>{u_id}</code> | ({u_pts} نقطة) | 📅 {u_date}\n"
-                
-            if total > 30: msg += f"\n...وغيرهم {total - 30} مستخدم."
-            bot.send_message(user_id, msg, reply_markup=admin_keyboard())
-            return
-            
+                diff_days = (get_ksa_time() - u.get('last_active', get_ksa_time())).days if isinstance(u.get('last_active'), datetime.datetime) else 0
+                status_dot = "🟢" if diff_days <= 3 else ("🟡" if diff_days <= 7 else "🔴")
+                msg += f"{status_dot} {u.get('first_name', 'مستخدم')} | <code>{u.get('user_id')}</code> | ({u.get('points', 0)} نقطة)\n"
+            bot.send_message(user_id, msg, reply_markup=admin_keyboard()); return
         elif text == "🚫 قائمة المحظورين":
             banned_users = list(users_collection.find({"$or": [{"is_banned": True}, {"is_muted": True}]}))
-            total_banned = len(banned_users)
-            if total_banned == 0:
-                bot.send_message(user_id, "✅ لا يوجد أي مستخدم محظور أو مكتوم حالياً.", reply_markup=admin_keyboard())
+            if not banned_users: bot.send_message(user_id, "✅ لا يوجد أي مستخدم محظور أو مكتوم حالياً.", reply_markup=admin_keyboard())
             else:
-                msg = f"🚫 <b>قائمة المحظورين والمكتومين ({total_banned}):</b>\n\n"
-                for u in banned_users:
-                    status = "محظور 🚫" if u.get("is_banned") else "مكتوم 🔇"
-                    msg += f"• {status} | {u.get('first_name', 'مستخدم')} | <code>{u.get('user_id')}</code>\n"
+                msg = f"🚫 <b>قائمة المحظورين والمكتومين ({len(banned_users)}):</b>\n\n"
+                for u in banned_users: msg += f"• {'محظور 🚫' if u.get('is_banned') else 'مكتوم 🔇'} | {u.get('first_name', 'مستخدم')} | <code>{u.get('user_id')}</code>\n"
                 bot.send_message(user_id, msg, reply_markup=admin_keyboard())
             return
 
-    users_collection.update_one({"user_id": user_id}, {"$set": {"last_active": datetime.datetime.now()}})
+    users_collection.update_one({"user_id": user_id}, {"$set": {"last_active": get_ksa_time()}})
 
     if not check_user_subscription(user_id):
         bot.send_message(user_id, "⚠️ <b>عذراً، يجب عليك الانضمام لقناة ومجموعة المتجر أولاً لتتمكن من استخدام البوت!</b>", reply_markup=subscription_required_markup())
@@ -840,12 +725,10 @@ def handle_private_text(message):
         return
 
     bot_settings = get_settings()
-    ref_bonus = bot_settings.get("referral_bonus", 2)
 
-    # تفاعلات الخاص فقط 
     if text == BTN_DAILY:
-        today_str = datetime.datetime.now().strftime("%Y-%m-%d")
-        yesterday_str = (datetime.datetime.now() - datetime.timedelta(days=1)).strftime("%Y-%m-%d")
+        today_str = get_ksa_time().strftime("%Y-%m-%d")
+        yesterday_str = (get_ksa_time() - datetime.timedelta(days=1)).strftime("%Y-%m-%d")
         last_date = user.get("last_collected_date")
         streak = user.get("streak", 0)
 
@@ -868,31 +751,24 @@ def handle_private_text(message):
         bot.send_message(message.chat.id, daily_msg, parse_mode="HTML")
 
     elif text == BTN_ACCOUNT:
-        points = user.get("points", 0)
-        account_msg = f"👤 <b>الاسم:</b> {user.get('first_name', 'غير معروف')}\n🆔 <b>رقم الحساب:</b> <code>{user_id}</code>\n⭐ <b>الرصيد:</b> {points} نقطة\n🤝 <b>المدعوين:</b> {user.get('invites', 0)}"
-        bot.send_message(message.chat.id, account_msg, parse_mode="HTML")
+        bot.send_message(message.chat.id, f"👤 <b>الاسم:</b> {user.get('first_name', 'غير معروف')}\n🆔 <b>رقم الحساب:</b> <code>{user_id}</code>\n⭐ <b>الرصيد:</b> {user.get('points', 0)} نقطة\n🤝 <b>المدعوين:</b> {user.get('invites', 0)}", parse_mode="HTML")
 
     elif text == BTN_MAIN:
+        # مسح سجل الإيداع لضمان عدم حدوث تعارض
+        user_states[user_id] = {}
         bot.send_message(user_id, "🏠 مرحباً بك في الرئيسية.", reply_markup=main_keyboard())
 
     elif text == BTN_INVITE:
-        invite_text = (
-            f"🎉 <b>دعوة خاصة لك!</b>\n"
-            f"✨ اكتشف أفضل الاشتراكات والخدمات الرقمية، واستمتع بعروض حصرية ومزايا مميزة. 🚀\n\n"
-            f"🎁 شارك الرابط واحصل على ({ref_bonus}) نقطة عن كل تسجيل:\n\n"
-            f"https://t.me/{bot.get_me().username}?start={user_id}"
-        )
-        bot.send_message(user_id, invite_text, parse_mode="HTML")
+        bot.send_message(user_id, f"🎉 <b>دعوة خاصة لك!</b>\n✨ اكتشف أفضل الاشتراكات والخدمات الرقمية، واستمتع بعروض حصرية ومزايا مميزة. 🚀\n\n🎁 شارك الرابط واحصل على ({bot_settings.get('referral_bonus', 2)}) نقطة عن كل تسجيل:\n\nhttps://t.me/{bot.get_me().username}?start={user_id}", parse_mode="HTML")
 
     elif text == BTN_CONTACT:
         bot.send_message(user_id, "💬 للتواصل المباشر مع الإدارة:\n\n<a href='https://t.me/bdallhshay7'>اضغط هنا للتواصل مع الدعم</a>", parse_mode="HTML")
 
     elif text == BTN_DEPOSIT:
-        sar_price = bot_settings.get("point_price_sar", 1.0)
-        yer_price = bot_settings.get("point_price_yer", 100.0)
-        usdt_pts = bot_settings.get("points_per_usdt", 15.0)
-
-        msg = (
+        # إعادة تهيئة حالة التتبع للمستخدم
+        user_states[user_id] = {'dep_msgs': []}
+        sar_price, yer_price, usdt_pts = bot_settings.get("point_price_sar", 1.0), bot_settings.get("point_price_yer", 100.0), bot_settings.get("points_per_usdt", 15.0)
+        msg_text = (
             "💳 <b>تعليمات الإيداع</b>\n\n"
             "📊 <b>سعر الصرف:</b>\n"
             f"▪️ 1 نقطة = {sar_price:g} SAR\n"
@@ -901,14 +777,14 @@ def handle_private_text(message):
             "⚠️ <b>ملاحظة:</b>\n"
             "• جميع عمليات الإيداع عبر Binance أو PayPal غير قابلة للاسترداد بعد تنفيذ عملية الدفع."
         )
-        markup = InlineKeyboardMarkup(row_width=2)
-        markup.add(
+        markup = InlineKeyboardMarkup(row_width=2).add(
             InlineKeyboardButton("💳 دفع سعودي", callback_data="dep_method_sar"),
             InlineKeyboardButton("💳 دفع يمني", callback_data="dep_method_yer"),
             InlineKeyboardButton("💳 PayPal", callback_data="dep_method_paypal"),
             InlineKeyboardButton("💳 Binance", callback_data="dep_method_binance")
         )
-        bot.send_message(user_id, msg, reply_markup=markup, parse_mode="HTML")
+        m = bot.send_message(user_id, msg_text, reply_markup=markup, parse_mode="HTML")
+        track_msg(user_id, m.message_id)
 
     elif text in [BTN_YT, BTN_SPOTIFY, BTN_GEMINI]:
         points = user.get("points", 0)
@@ -917,7 +793,6 @@ def handle_private_text(message):
 
         if points >= service_price:
             urls = {BTN_YT: "youtube.html", BTN_SPOTIFY: "spotify.html", BTN_GEMINI: "gemini.html"}
-            
             if text == BTN_GEMINI:
                 gemini_msg = (
                     f"📸 <b>ترقية Gemini Pro تلقائيًا</b>\n"
@@ -940,8 +815,7 @@ def handle_private_text(message):
                 )
                 msg = bot.send_message(user_id, gemini_msg, parse_mode="HTML", disable_web_page_preview=True)
             else:
-                names = {BTN_YT: "📺 يوتيوب بريميوم", BTN_SPOTIFY: "🎵 سبوتيفاي بريميوم"}
-                msg = bot.send_message(user_id, f"{names[text]}\n\n💎 <b>التكلفة:</b> {service_price} نقطة.")
+                msg = bot.send_message(user_id, f"{'📺 يوتيوب بريميوم' if text==BTN_YT else '🎵 سبوتيفاي بريميوم'}\n\n💎 <b>التكلفة:</b> {service_price} نقطة.")
             
             markup = InlineKeyboardMarkup().add(InlineKeyboardButton("📝 فتح النموذج للطلب", web_app=WebAppInfo(url=f"https://mybot-1-d6wr.onrender.com/{urls[text]}?uid={user_id}&pts={points}&service={urls[text].split('.')[0]}&msg_id={msg.message_id}")))
             bot.edit_message_reply_markup(user_id, msg.message_id, reply_markup=markup)
@@ -952,16 +826,12 @@ def handle_private_text(message):
         bot.send_message(user_id, "⏳ سيتم إضافة المحتوى قريباً...")
 
 # ==========================================
-# --- نظام API لاستقبال بيانات النماذج ---
+# --- نظام API لاستقبال بيانات النماذج (يعمل 100%) ---
 # ==========================================
 @app.route('/submit_form', methods=['POST'])
 def submit_form():
     data = request.json
-    user_id = int(data.get('uid'))
-    msg_id = int(data.get('msg_id'))
-    service_type = data.get('service', 'yt')
-    form_data = data.get('dataString')
-
+    user_id, msg_id, service_type, form_data = int(data.get('uid')), int(data.get('msg_id')), data.get('service', 'yt'), data.get('dataString')
     user = users_collection.find_one({"user_id": user_id})
     if user and user.get("is_banned", False): return jsonify({"status": "banned"}), 403
 
@@ -973,9 +843,8 @@ def submit_form():
         users_collection.update_one({"user_id": user_id}, {"$inc": {"points": -service_price}})
         new_points = user.get("points", 0) - service_price
         if ADMIN_ID:
-            admin_msg = f"🔔 <b>طلب جديد استلمناه للتو!</b>\n\n👤 العميل: {user.get('first_name', 'عميل')}\n🆔 رقم العميل: <code>{user_id}</code>\n\n📋 <b>البيانات المرسلة:</b>\n{form_data}"
             markup = InlineKeyboardMarkup().add(InlineKeyboardButton("✍️ رد على العميل", callback_data=f"reply_{user_id}"))
-            try: bot.send_message(ADMIN_ID, admin_msg, reply_markup=markup)
+            try: bot.send_message(ADMIN_ID, f"🔔 <b>طلب جديد استلمناه للتو!</b>\n\n👤 العميل: {user.get('first_name', 'عميل')}\n🆔 رقم العميل: <code>{user_id}</code>\n\n📋 <b>البيانات:</b>\n{form_data}", reply_markup=markup)
             except: pass
         try: bot.delete_message(user_id, msg_id) 
         except: pass
@@ -1005,8 +874,7 @@ def getMessage():
         update = telebot.types.Update.de_json(json_string)
         bot.process_new_updates([update])
         return "!", 200
-    except:
-        return "!", 500
+    except: return "!", 500
 
 @app.route('/setup')
 def setup_webhook():
