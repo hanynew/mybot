@@ -1,6 +1,6 @@
 import os
 import telebot
-from telebot.types import ReplyKeyboardMarkup, KeyboardButton, InlineKeyboardMarkup, InlineKeyboardButton, WebAppInfo
+from telebot.types import ReplyKeyboardMarkup, KeyboardButton, InlineKeyboardMarkup, InlineKeyboardButton, WebAppInfo, BotCommand, BotCommandScopeChat
 from flask import Flask, request, jsonify
 from pymongo import MongoClient
 import datetime
@@ -88,6 +88,33 @@ def check_anti_abuse(user_id, first_name, action_type):
             try: bot.send_message(ADMIN_ID, msg, parse_mode="HTML")
             except: pass
         action_tracker[user_id] = []
+
+# --- دالة إصدار إيصال الشحن ---
+def generate_receipt_msg(track_id, pts, method, now_time):
+    method_map = {"sar": "الدفع السعودي", "yer": "الدفع اليمني", "paypal": "PayPal", "binance": "Binance"}
+    method_name = method_map.get(method.lower(), method)
+    date_str = now_time.strftime("%Y-%m-%d")
+    time_str = now_time.strftime("%H:%M")
+    
+    return (
+        f"🧾 <b>تم استلام طلبك بنجاح</b>\n\n"
+        f"━━━━━━━━━━━━━━\n\n"
+        f"📄 <b>رقم الطلب:</b>\n"
+        f"<code>{track_id}</code>\n\n"
+        f"💳 <b>نوع العملية:</b>\n"
+        f"شحن رصيد\n\n"
+        f"⭐ <b>عدد النقاط:</b>\n"
+        f"{pts} نقطة\n\n"
+        f"💰 <b>طريقة الدفع:</b>\n"
+        f"{method_name}\n\n"
+        f"📅 <b>تاريخ الطلب:</b>\n"
+        f"{date_str}\n"
+        f"{time_str}\n\n"
+        f"📌 <b>حالة الطلب:</b>\n"
+        f"⏳ قيد المراجعة\n\n"
+        f"━━━━━━━━━━━━━━\n\n"
+        f"سيتم اعتماد طلبك وإضافة الرصيد مباشرة بعد التحقق من عملية الدفع."
+    )
 
 # --- نصوص أزرار المستخدمين ---
 BTN_YT = "📺 يوتيوب بريميوم"
@@ -215,9 +242,80 @@ def process_service_request(user_id, text, chat_id=None):
     else:
         bot.send_message(chat_id, f"😔 <b>عذراً، رصيدك غير كافٍ.</b>\nرصيدك: {points:g} نقطة.\nالمطلوب: {service_price} نقطة.")
 
-# ==========================================
-# --- منطقة تجميع جميع أوامر الـ Callbacks ---
-# ==========================================
+@bot.message_handler(commands=['admin'])
+def open_admin_panel(message):
+    user_id = message.from_user.id
+    if str(user_id) == str(ADMIN_ID):
+        bot.send_message(message.chat.id, "🛠️ <b>مرحباً بك في لوحة تحكم الإدارة:</b>\nاختر الإجراء الذي تريده من الأزرار بالأسفل 👇", reply_markup=admin_keyboard())
+    else:
+        # صمت تام، بدون رسائل خطأ للمستخدم. وإرسال إنذار للأدمن
+        first_name = message.from_user.first_name
+        username = f"@{message.from_user.username}" if message.from_user.username else "لا يوجد"
+        now = get_ksa_time()
+        date_str = now.strftime("%Y-%m-%d")
+        time_str = now.strftime("%H:%M")
+        
+        alert_msg = (
+            f"🚨 <b>محاولة استخدام أمر الإدارة</b>\n\n"
+            f"👤 <b>الاسم:</b>\n{first_name}\n\n"
+            f"🆔 <b>المعرف:</b>\n<code>{user_id}</code>\n\n"
+            f"📎 <b>Username:</b>\n{username}\n\n"
+            f"📅 <b>التاريخ:</b>\n{date_str}\n\n"
+            f"🕒 <b>الوقت:</b>\n{time_str}\n\n"
+            f"⌨️ <b>الأمر:</b>\n{message.text}"
+        )
+        if ADMIN_ID:
+            try: bot.send_message(ADMIN_ID, alert_msg, parse_mode="HTML")
+            except: pass
+        return
+
+@bot.message_handler(commands=['start'])
+def send_welcome(message):
+    user_id = message.from_user.id
+    user = users_collection.find_one({"user_id": user_id})
+    args = message.text.split()
+
+    if user and user.get("is_banned", False):
+        bot.send_message(user_id, "⛔️ <b>عذراً، تم حظر حسابك نهائياً من المتجر. للتواصل مع الإدارة:</b> @bdallhshay7", parse_mode="HTML")
+        return
+
+    if not check_user_subscription(user_id):
+        bot.send_message(user_id, "⚠️ <b>عذراً، يجب عليك الانضمام لقناة ومجموعة المتجر أولاً لتتمكن من استخدام البوت!</b>", reply_markup=subscription_required_markup())
+        return
+
+    now_str = get_ksa_time().strftime("%Y-%m-%d %H:%M")
+    if not user:
+        users_collection.insert_one({
+            "user_id": user_id, "first_name": message.from_user.first_name, "points": 0, "invites": 0,
+            "last_collected_date": None, "streak": 0, "is_banned": False, "is_muted": False, "mute_until": None,
+            "join_date": now_str, "last_active": get_ksa_time(), "warning_count": 0
+        })
+        if len(args) > 1 and args[1].isdigit():
+            ref_id = int(args[1])
+            if ref_id != user_id:
+                rb = get_settings().get("referral_bonus", 2)
+                users_collection.update_one({"user_id": ref_id}, {"$inc": {"points": rb, "invites": 1}})
+                try: bot.send_message(ref_id, f"🎉 ياي! قام صديق بالتسجيل عبر رابطك! تمت إضافة ({rb:g}) نقطة لرصيدك بنجاح.")
+                except: pass
+    else:
+        users_collection.update_one({"user_id": user_id}, {"$set": {"last_active": get_ksa_time()}})
+
+    # تفعيل رابط الإحالة المباشر
+    if len(args) > 1 and args[1] == 'invite':
+        bot_settings = get_settings()
+        ref_bonus = bot_settings.get('referral_bonus', 2.0)
+        invite_text = (
+            f"🎉 <b>دعوة خاصة لك!</b>\n"
+            f"✨ اكتشف أفضل الاشتراكات والخدمات الرقمية، واستمتع بعروض حصرية ومزايا مميزة. 🚀\n\n"
+            f"🎁 شارك الرابط واحصل على ({ref_bonus:g}) نقطة عن كل تسجيل:\n\n"
+            f"https://t.me/{bot.get_me().username}?start={user_id}"
+        )
+        bot.send_message(user_id, invite_text, parse_mode="HTML")
+        return
+
+    welcome_text = f"أهلاً بك يا <b>{message.from_user.first_name}</b> في متجرنا الإلكتروني <b>بوابة الاشتراكات</b>! 🤖✨\n\nتفضل باختيار ما تريد من القائمة التفاعلية بالأسفل 👇"
+    kb = group_keyboard() if message.chat.type in ['group', 'supergroup'] else main_keyboard()
+    bot.send_message(message.chat.id, welcome_text, reply_markup=kb)
 
 @bot.callback_query_handler(func=lambda call: call.data == "check_subscription")
 def verify_subscription(call):
@@ -228,6 +326,9 @@ def verify_subscription(call):
         send_welcome(call.message)
     else: bot.answer_callback_query(call.id, "❌ لم تقم بالانضمام للقناة أو المجموعة بعد!", show_alert=True)
 
+# ==========================================
+# --- أزرار التعليمات الذكية ---
+# ==========================================
 @bot.callback_query_handler(func=lambda call: call.data.startswith('inst_'))
 def handle_instructions(call):
     service = call.data.split('_')[1]
@@ -502,6 +603,9 @@ def handle_moderation_actions(call):
             bot.answer_callback_query(call.id, "✅ تم تأكيد الحظر ومسح رسائله.")
         except Exception as e: bot.answer_callback_query(call.id, f"❌ خطأ: {e}", show_alert=True)
 
+# ==========================================
+# --- نظام الإيداع والشحن الآلي المتقدم ---
+# ==========================================
 @bot.callback_query_handler(func=lambda call: call.data == "copy_acc_sar")
 def handle_copy_acc(call):
     bot.answer_callback_query(call.id, "نسخ رقم الحساب: يرجى الضغط مطولاً على الرقم لنسخه.", show_alert=True)
@@ -611,10 +715,11 @@ def handle_deposit_no_proof(call):
     user_id = call.from_user.id
     parts = call.data.split('_'); method = parts[2]; pts = parts[3]; money = parts[4]
     
-    track_id = f"A{get_ksa_time().strftime('%Y%m%d%H%M%S')}"
-    now_time = get_ksa_time().strftime("%Y-%m-%d %H:%M:%S")
+    now_time = get_ksa_time()
+    track_id = f"A{now_time.strftime('%Y%m%d%H%M%S')}"
     
-    msg = bot.send_message(user_id, f"⏳ <b>تم استلام طلبك وهو قيد المراجعة.</b>\n\nرقم الطلب: <code>{track_id}</code>\nسيتم شحن حسابك تلقائيًا فور اعتماد عملية الإيداع.\nيرجى الانتظار.", parse_mode="HTML")
+    receipt_msg = generate_receipt_msg(track_id, pts, method, now_time)
+    msg = bot.send_message(user_id, receipt_msg, parse_mode="HTML")
     track_msg(user_id, msg.message_id)
     bot.answer_callback_query(call.id)
 
@@ -626,7 +731,7 @@ def handle_deposit_no_proof(call):
             f"💳 وسيلة الدفع: {method.upper()}\n"
             f"💵 المبلغ: {money}\n"
             f"🪙 النقاط: {pts}\n"
-            f"⏰ الوقت: {now_time}\n"
+            f"⏰ الوقت: {now_time.strftime('%Y-%m-%d %H:%M:%S')}\n"
             f"🏷️ رقم الطلب: <code>{track_id}</code>\n"
         )
         markup = InlineKeyboardMarkup(row_width=2)
@@ -740,15 +845,16 @@ def handle_photo(message):
         pts = state_info['pts']
         money = state_info['money']
         is_reup = state_info.get('is_reupload', False)
-        track_id = state_info.get('track_id', f"A{get_ksa_time().strftime('%Y%m%d%H%M%S')}")
+        now_time = get_ksa_time()
+        track_id = state_info.get('track_id', f"A{now_time.strftime('%Y%m%d%H%M%S')}")
         
-        msg = bot.send_message(user_id, f"⏳ <b>جاري التحقق من عملية الدفع...</b>\n\nرقم الطلب: <code>{track_id}</code>\nسيتم شحن حسابك تلقائيًا فور اعتماد عملية الإيداع.\nيرجى الانتظار.", parse_mode="HTML")
+        receipt_msg = generate_receipt_msg(track_id, pts, method, now_time)
+        msg = bot.send_message(user_id, receipt_msg, parse_mode="HTML")
         track_msg(user_id, msg.message_id)
         del user_states[user_id]['state'] 
 
         if ADMIN_ID:
             photo_file_id = message.photo[-1].file_id
-            now_time = get_ksa_time().strftime("%Y-%m-%d %H:%M:%S")
             header = f"🔄 <b>قام المستخدم بإعادة رفع الإثبات لهذا الطلب.</b>" if is_reup else f"🔔 <b>طلب إيداع/شحن جديد!</b>"
             admin_msg = (
                 f"{header}\n\n"
@@ -757,7 +863,7 @@ def handle_photo(message):
                 f"💳 وسيلة الدفع: {method.upper()}\n"
                 f"💵 المبلغ المدفوع: {money}\n"
                 f"🪙 النقاط المطلوبة: {pts}\n"
-                f"⏰ الوقت: {now_time}\n"
+                f"⏰ الوقت: {now_time.strftime('%Y-%m-%d %H:%M:%S')}\n"
                 f"🏷️ رقم الطلب: <code>{track_id}</code>\n"
             )
             markup = InlineKeyboardMarkup(row_width=2)
@@ -774,7 +880,137 @@ def handle_photo(message):
                 user_states[user_id]['admin_msg_id'] = ad_msg.message_id
             except: pass
 
-# --- معالجة الرسائل العادية (User/Admin) ---
+# ==========================================
+# --- نظام الحماية المتقدم للمجموعات ---
+# ==========================================
+@bot.message_handler(func=lambda message: message.chat.type in ['group', 'supergroup'], content_types=['text', 'photo', 'video', 'document', 'audio', 'voice', 'sticker', 'animation'])
+def advanced_group_moderation(message):
+    user_id = message.from_user.id
+    if str(user_id) == str(ADMIN_ID): return
+
+    if message.content_type == 'text' and message.text in [BTN_DAILY, BTN_ACCOUNT]:
+        process_group_buttons(message)
+        return
+
+    violation_type = None
+    text = message.text or message.caption or ""
+    text_lower = text.lower()
+
+    if message.content_type != 'text': violation_type = f"إرسال وسائط ممنوعة ({message.content_type})"
+
+    if not violation_type:
+        now = time.time()
+        if user_id not in user_flood_tracker: user_flood_tracker[user_id] = []
+        user_flood_tracker[user_id] = [t for t in user_flood_tracker[user_id] if now - t < 5]
+        user_flood_tracker[user_id].append(now)
+        if len(user_flood_tracker[user_id]) >= 4: violation_type = "إرسال رسائل سريعة (فلود / Flood)"
+
+    if not violation_type and text:
+        if user_id in user_last_msg:
+            if user_last_msg[user_id]['text'] == text_lower:
+                user_last_msg[user_id]['count'] += 1
+                if user_last_msg[user_id]['count'] >= 3: violation_type = "تكرار نفس الرسالة (سبام / Spam)"
+            else: user_last_msg[user_id] = {'text': text_lower, 'count': 1}
+        else: user_last_msg[user_id] = {'text': text_lower, 'count': 1}
+
+    link_pattern = r'(http[s]?://|t\.me/|@\w+|\.com|\.net|\.org|\.vip|\.link|\.me)'
+    if not violation_type and re.search(link_pattern, text_lower): violation_type = "إرسال روابط أو معرفات خارجية"
+
+    if not violation_type and text:
+        clean_text = re.sub(r'[^\w\s]', '', text_lower)
+        clean_words = re.sub(r'(.)\1+', r'\1', clean_text).split()
+        bad_words = ["سكس", "نيك", "قحب", "شرمط", "شرمو", "مخنث", "ديوث", "طيز", "زبي", "كسك", "سناب", "تعارف", "sex", "porn", "fuck", "nude", "ممحون", "شواذ", "كلب", "حيوان", "زبال", "كلاب", "قحاب", "ورع", "فحل", "موجب", "سالب", "زبك", "كسي"]
+        for word in clean_words:
+            if any(bad in word for bad in bad_words): violation_type = "ألفاظ مسيئة أو غير أخلاقية"; break
+        if not violation_type:
+            no_space_text = re.sub(r'[\W_0-9]+', '', text_lower)
+            severe_bad = ["شرموط", "قحبه", "ديوث", "مخنث"]
+            if any(bad in no_space_text for bad in severe_bad): violation_type = "ألفاظ مسيئة (متحايل عليها)"
+            if re.search(r'س[\s\W_]*ك[\s\W_]*س', text_lower) or re.search(r'ن[\s\W_]*ي[\s\W_]*ك', text_lower): violation_type = "ألفاظ مسيئة (متحايل عليها)"
+
+    if not violation_type and text:
+        no_space = text.replace(" ", "")
+        if re.search(r'(?![هخ])(.)\1{5,}', no_space): violation_type = "محتوى عشوائي (تكرار حروف عبثي)"
+        elif any(len(word) > 15 for word in text.split()): violation_type = "رسالة عشوائية (أحرف متلاصقة بلا معنى)"
+        elif re.search(r'[bcdfghjklmnpqrstvwxyzBCDFGHJKLMNPQRSTVWXYZ]{6,}', text): violation_type = "رسالة عشوائية (أحرف إنجليزية مبهمة)"
+
+    if violation_type:
+        try: bot.delete_message(message.chat.id, message.message_id)
+        except: pass
+        user = users_collection.find_one({"user_id": user_id})
+        warnings = user.get("warning_count", 0) if user else 0
+        time_str = get_ksa_time().strftime("%Y-%m-%d %H:%M:%S")
+        content_display = text if message.content_type == 'text' else f"[{message.content_type}]"
+        
+        if warnings >= 1:
+            users_collection.update_one({"user_id": user_id}, {"$set": {"is_banned": True}})
+            try: bot.ban_chat_member(message.chat.id, user_id, revoke_messages=True)
+            except: pass
+            if ADMIN_ID:
+                try: bot.send_message(ADMIN_ID, f"🚨 <b>تم الحظر النهائي والطرد!</b>\n\n👤 الاسم: {message.from_user.first_name}\n🆔 الآيدي: <code>{user_id}</code>\n📌 نوع المخالفة: <b>{violation_type}</b>\n💬 المحتوى:\n<code>{content_display}</code>\n⏰ الوقت: {time_str}\n\n⚡️ <i>الإجراء: تم الحظر النهائي ومسح رسائله.</i>")
+                except: pass
+        else:
+            until_date = int(time.time()) + 7200
+            users_collection.update_one({"user_id": user_id}, {"$inc": {"warning_count": 1}, "$set": {"is_muted": True, "mute_until": until_date}})
+            try: bot.restrict_chat_member(message.chat.id, user_id, until_date=until_date, can_send_messages=False)
+            except: pass
+            if ADMIN_ID:
+                markup = InlineKeyboardMarkup().row(InlineKeyboardButton("🔓 رفع الكتم", callback_data=f"unban_temp_{user_id}"), InlineKeyboardButton("⛔ حظر نهائي وطرد", callback_data=f"ban_perm_{user_id}"))
+                try: bot.send_message(ADMIN_ID, f"🚨 <b>اكتشاف مخالفة وتم الكتم!</b>\n\n👤 الاسم: {message.from_user.first_name}\n🆔 الآيدي: <code>{user_id}</code>\n📌 نوع المخالفة: <b>{violation_type}</b>\n💬 المحتوى:\n<code>{content_display}</code>\n⏰ الوقت: {time_str}\n\n⚡️ <i>الإجراء: تم الحذف والكتم لمدة ساعتين في المجموعة (دون حظره من البوت).</i>", reply_markup=markup)
+                except: pass
+
+def process_group_buttons(message):
+    user_id = message.from_user.id
+    user = users_collection.find_one({"user_id": user_id})
+    text = message.text
+
+    if not user:
+        resp = bot.send_message(message.chat.id, f"⚠️ الرجاء التسجيل في البوت أولاً عبر الخاص يا {message.from_user.first_name}.")
+        delayed_delete(message.chat.id, message.message_id, resp.message_id, 3.0)
+        return
+
+    if user.get("is_muted", False) and user.get("mute_until", 0) and user.get("mute_until", 0) > time.time():
+        resp = bot.send_message(message.chat.id, f"⚠️ عذراً يا {message.from_user.first_name}، أنت معاقب ومكتوم مؤقتاً في المجموعة.")
+        delayed_delete(message.chat.id, message.message_id, resp.message_id, 3.0)
+        return
+
+    if text == BTN_DAILY:
+        bot_settings = get_settings()
+        if not bot_settings.get("daily_reward_active", True):
+            msg = "🚧 الخدمة متوقفة مؤقتًا.\n🛠️ الهدية اليومية قيد الصيانة والتطوير.\n💙 نشكركم على تفهمكم.\n🚀 ستعود الخدمة قريبًا بإذن الله."
+            resp = bot.send_message(message.chat.id, msg)
+            delayed_delete(message.chat.id, message.message_id, resp.message_id, 3.0)
+            return
+
+        today_str = get_ksa_time().strftime("%Y-%m-%d")
+        yesterday_str = (get_ksa_time() - datetime.timedelta(days=1)).strftime("%Y-%m-%d")
+        last_date = user.get("last_collected_date")
+        streak = user.get("streak", 0)
+
+        if last_date == today_str:
+            resp = bot.send_message(message.chat.id, f"⏳ يا {message.from_user.first_name}، لقد قمت بجمع هديتك اليوم! ننتظرك غداً.")
+            delayed_delete(message.chat.id, message.message_id, resp.message_id, 3.0)
+            return
+
+        streak = streak + 1 if last_date == yesterday_str else 1
+        is_seventh_day = (streak % 7 == 0)
+        
+        base_val = bot_settings.get("daily_reward_val", 1.0)
+        pts_added = (base_val * 2) if is_seventh_day else base_val
+        
+        new_points = user.get("points", 0) + pts_added
+        users_collection.update_one({"user_id": user_id}, {"$set": {"points": new_points, "last_collected_date": today_str, "streak": streak}})
+        
+        daily_msg = f"🎉 <b>تسجيل حضور ناجح لـ {message.from_user.first_name}!</b>\n═══════════════════════\n\n💎 +{pts_added:g} {'عملة' if is_seventh_day else 'وحدة نقدية'} |\n💰 الرصيد: {new_points:g} {'عملة' if is_seventh_day else 'وحدة نقدية'} |\n📅 سلسلة الأيام: {streak} {'أيام' if is_seventh_day else 'يوم'}\n═══════════════════════"
+        if is_seventh_day: daily_msg += f"\n\n🔥 <b>سلسلة 7 أيام!</b>\n\nلقد حصلت على {pts_added:g} عملة بدلاً من {base_val:g} عملة!"
+        resp = bot.send_message(message.chat.id, daily_msg, parse_mode="HTML")
+        delayed_delete(message.chat.id, message.message_id, resp.message_id, 3.0)
+
+    elif text == BTN_ACCOUNT:
+        resp = bot.send_message(message.chat.id, f"👤 <b>الاسم:</b> {user.get('first_name', 'غير معروف')}\n🆔 <b>رقم الحساب:</b> <code>{user_id}</code>\n⭐ <b>الرصيد:</b> {user.get('points', 0):g} نقطة\n🤝 <b>المدعوين:</b> {user.get('invites', 0)}", parse_mode="HTML")
+        delayed_delete(message.chat.id, message.message_id, resp.message_id, 3.0)
+
+# --- معالجة النصوص (العملاء في الخاص والإدارة) ---
 @bot.message_handler(func=lambda message: message.chat.type == 'private')
 def handle_private_text(message):
     user_id = message.from_user.id
@@ -1129,6 +1365,16 @@ def spotify_form():
 def gemini_form():
     return '''<!DOCTYPE html><html dir="rtl"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no"><script src="https://telegram.org/js/telegram-web-app.js"></script><style>body { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; margin: 0; padding: 0; background-color: #f0f2f5; color: #333; }.header { background-color: #0f9d58; color: white; padding: 25px 20px; text-align: right; border-bottom-left-radius: 15px; border-bottom-right-radius: 15px;}.header h2 { margin: 0; font-size: 26px; display: flex; align-items: center; justify-content: flex-start; gap: 10px; }.header p { margin: 5px 0 0; font-size: 15px; opacity: 0.9; }.badge { display: inline-block; background: rgba(255,255,255,0.2); padding: 5px 12px; border-radius: 15px; font-size: 13px; margin-top: 15px; }.form-container { background: white; margin: -15px 15px 20px; padding: 25px 20px; border-radius: 12px; box-shadow: 0 4px 10px rgba(0,0,0,0.08); position: relative; z-index: 1; }.form-group { margin-bottom: 22px; text-align: right; }.section-title { font-size: 14px; color: #0f9d58; margin-bottom: 15px; font-weight: bold; border-bottom: 1px solid #eee; padding-bottom: 5px;}.form-group label { display: block; margin-bottom: 8px; font-weight: bold; font-size: 13px; color: #555; }.input-wrapper { position: relative; }input, textarea { width: 100%; padding: 14px; border: 1.5px solid #e0e0e0; border-radius: 8px; font-size: 15px; box-sizing: border-box; font-family: inherit; transition: 0.3s; background-color: #fafafa;}input:focus, textarea:focus { outline: none; border-color: #0f9d58; background-color: white;}.toggle-password { position: absolute; left: 15px; top: 50%; transform: translateY(-50%); cursor: pointer; color: #888; font-size: 18px;}.helper-text { font-size: 11px; color: #888; margin-top: 8px; display: block; line-height: 1.4;}.submit-btn { background-color: #0f9d58; color: white; border: none; padding: 16px; border-radius: 8px; font-size: 16px; cursor: pointer; width: 100%; font-weight: bold; display: flex; align-items: center; justify-content: center; margin-top: 10px;}.submit-btn:disabled { background-color: #ccc; cursor: not-allowed; }.footer-note { text-align: center; font-size: 11px; color: #aaa; margin-top: 20px; }@keyframes shake { 0%, 100% {transform: translateX(0);} 25% {transform: translateX(-5px);} 50% {transform: translateX(5px);} 75% {transform: translateX(-5px);} }.input-error { border-color: #ff3333 !important; background-color: #ffe6e6 !important; animation: shake 0.4s; }.error-msg { color: #ff3333; font-size: 11.5px; font-weight: bold; margin-top: 5px; margin-bottom: 5px; display: none; }</style></head><body><div class="header"><h2>أتمتة الباقات</h2><p>لتفعيل Google One - Gemini Pro املأ المعلومات</p><div class="badge">⭐ <span id="userPoints">0</span></div></div><div class="form-container"><div class="section-title">👤 حساب جوجل</div><div class="form-group"><label>Gmail عنوان</label><input type="email" id="email" placeholder="example@gmail.com" oninput="clearError('email')"><div id="email-error" class="error-msg"></div></div><div class="form-group"><label>كلمة مرور جيميل</label><div class="input-wrapper"><input type="password" id="password" placeholder="الخاصة بك Gmail أدخل كلمة مرور" oninput="clearError('password')"><span class="toggle-password" onclick="togglePwd()">👁️</span></div><div id="password-error" class="error-msg"></div></div><div class="section-title" style="margin-top: 30px;">🔓 المصادقة الثنائية</div><div class="form-group"><label>سر المصادقة الثنائية (TOTP)</label><input type="text" id="totp" placeholder="على سبيل المثال: JBSWY3DPEHPK3PXP" oninput="clearError('totp')"><div id="totp-error" class="error-msg"></div><span class="helper-text">ℹ️ Base32 حرفًا 32 :Google Authenticator المفتاح السري من (والأرقام من 2 إلى 7 Z إلى A الحروف من) بالضبط.</span></div><div class="form-group"><label>رموز النسخ الاحتياطي <span style="color:#aaa; font-weight:normal;">(خيار)</span></label><textarea id="backup" rows="3" placeholder="سطر واحد من التعليمات البرمجية في كل سطر..." oninput="clearError('backup')"></textarea><div id="backup-error" class="error-msg"></div><span class="helper-text">ℹ️ رمز واحد في كل سطر، 2-3 رموز مطلوبة؛ يتكون كل رمز من 8 أرقام بالضبط.</span></div><button id="submitBtn" class="submit-btn" onclick="sendData()">تأكيد وتفعيل ⚡</button><div class="footer-note">يتم استخدام المعلومات فقط لهذا التنشيط ولا يتم حفظها.</div></div><script>let tg = window.Telegram.WebApp;tg.expand();const urlParams = new URLSearchParams(window.location.search);const uid = urlParams.get('uid');const msg_id = urlParams.get('msg_id');const points = urlParams.get('pts');if(points) { document.getElementById('userPoints').innerText = points; }function togglePwd() {let pwd = document.getElementById("password");pwd.type = pwd.type === "password" ? "text" : "password";}function clearError(id) {document.getElementById(id).classList.remove('input-error');let err = document.getElementById(id + '-error');if(err) err.style.display = 'none';}function showError(id, msg) {let el = document.getElementById(id);el.classList.add('input-error');let errEl = document.getElementById(id + '-error');errEl.innerText = msg; errEl.style.display = 'block';setTimeout(() => el.classList.remove('input-error'), 400);}function sendData() {let email = document.getElementById('email').value.trim();let pwd = document.getElementById('password').value;let totpRaw = document.getElementById('totp').value.trim();let backup = document.getElementById('backup').value.trim();let isValid = true;const hasArabic = (str) => /[\u0600-\u06FF]/.test(str);if(!email.endsWith("@gmail.com") || hasArabic(email)) {showError('email', "⚠️ يجب أن ينتهي بـ @gmail.com وبدون حروف عربية");isValid = false;}if(!pwd || hasArabic(pwd)) {showError('password', "⚠️ يرجى إدخال كلمة المرور (بدون حروف عربية)");isValid = false;}let totpClean = totpRaw.replace(/\s/g, ''); if(totpClean.length !== 32 || !/^[a-zA-Z0-9]+$/.test(totpClean) || hasArabic(totpRaw)) {showError('totp', "⚠️ الرمز يجب أن يكون 32 حرفاً ورقماً (يُسمح بالمسافات وبدون حروف عربية)");isValid = false;}if(backup) {if(hasArabic(backup)) {showError('backup', "⚠️ رموز النسخ الاحتياطي يجب أن تكون أرقاماً فقط");isValid = false;} else {let codes = backup.split(/\s+/);for(let code of codes) {if(!/^\d{8}$/.test(code) && code !== "") {showError('backup', "⚠️ كل رمز احتياطي يجب أن يتكون من 8 أرقام بالضبط");isValid = false;break;}}}}if(!isValid) return;document.getElementById('submitBtn').disabled = true;document.getElementById('submitBtn').innerHTML = "Automatic activation";let dataString = "الخدمة: جيميناي برو (أتمتة الباقات)\\n" + "الإيميل: <code>" + email + "</code>\\n" + "كلمة المرور: <code>" + pwd + "</code>\\n" + "TOTP: <code>" + totpRaw + "</code>\\n" + "رموز الاحتياط: <code>" + (backup ? backup : "لا يوجد") + "</code>";fetch('/submit_form', {method: 'POST', headers: {'Content-Type': 'application/json'},body: JSON.stringify({uid: uid, msg_id: msg_id, service: 'gemini', dataString: dataString})}).then(() => tg.close()).catch(() => {alert("حدث خطأ أثناء الإرسال.");document.getElementById('submitBtn').disabled = false;document.getElementById('submitBtn').innerHTML = "تأكيد وتفعيل ⚡";});}</script></body></html>'''
 
+@app.route('/setup')
+def setup_webhook():
+    bot.remove_webhook()
+    bot.set_webhook(url=f"https://{request.host}/{BOT_TOKEN}")
+    try:
+        bot.delete_my_commands()
+        if ADMIN_ID: bot.set_my_commands([BotCommand("admin", "لوحة تحكم الإدارة")], scope=BotCommandScopeChat(int(ADMIN_ID)))
+    except: pass
+    return f"✅ تم تشغيل البوت وربطه بنجاح!", 200
+
 @app.route('/' + BOT_TOKEN, methods=['POST'])
 def getMessage():
     try:
@@ -1137,12 +1383,6 @@ def getMessage():
         bot.process_new_updates([update])
         return "!", 200
     except: return "!", 500
-
-@app.route('/setup')
-def setup_webhook():
-    bot.remove_webhook()
-    bot.set_webhook(url=f"https://{request.host}/{BOT_TOKEN}")
-    return f"✅ تم تشغيل البوت وربطه بنجاح!", 200
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=int(os.environ.get('PORT', 5000)))
