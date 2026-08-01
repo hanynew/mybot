@@ -61,6 +61,18 @@ user_flood_tracker = {}
 user_last_msg = {}
 action_tracker = {}
 
+# --- نظام قفل العمليات الإدارية (Atomic Execution) ---
+admin_action_lock = threading.Lock()
+processed_admin_actions = set()
+
+def is_action_processed(call):
+    key = f"{call.message.message_id}_{call.data}"
+    with admin_action_lock:
+        if key in processed_admin_actions:
+            return True
+        processed_admin_actions.add(key)
+        return False
+
 # --- نظام الحماية الداخلي (Anti-Abuse) ---
 def check_anti_abuse(user_id, first_name, action_type):
     now = time.time()
@@ -83,7 +95,6 @@ BTN_SPOTIFY = "🎵 سبوتيفاي بريميوم"
 BTN_GEMINI = "✨ جيميناي"
 BTN_DAILY = "🎁 الهدية اليومية"
 BTN_DEPOSIT = "💳 شحن البوت عن طريق الإيداع"
-BTN_CONTACT = "💬 تواصل مع الإدارة"
 BTN_ACCOUNT = "👤 حسابي"
 BTN_INVITE = "🤝 دعوة الأصدقاء"
 BTN_HELP = "❓ المساعدة"
@@ -93,11 +104,10 @@ BTN_MAIN = "🏠 الرئيسية"
 def main_keyboard():
     markup = ReplyKeyboardMarkup(resize_keyboard=True, row_width=2)
     markup.add(KeyboardButton(BTN_YT), KeyboardButton(BTN_SPOTIFY))
-    markup.add(KeyboardButton(BTN_GEMINI), KeyboardButton(BTN_DAILY))
-    markup.add(KeyboardButton(BTN_DEPOSIT), KeyboardButton(BTN_CONTACT))
-    markup.add(KeyboardButton(BTN_ACCOUNT), KeyboardButton(BTN_INVITE))
-    markup.add(KeyboardButton(BTN_HELP), KeyboardButton(BTN_GUIDE))
-    markup.add(KeyboardButton(BTN_MAIN))
+    markup.add(KeyboardButton(BTN_GEMINI), KeyboardButton(BTN_DEPOSIT))
+    markup.add(KeyboardButton(BTN_DAILY), KeyboardButton(BTN_ACCOUNT))
+    markup.add(KeyboardButton(BTN_INVITE), KeyboardButton(BTN_HELP))
+    markup.add(KeyboardButton(BTN_GUIDE), KeyboardButton(BTN_MAIN))
     return markup
 
 def group_keyboard():
@@ -242,7 +252,6 @@ def send_welcome(message):
     else:
         users_collection.update_one({"user_id": user_id}, {"$set": {"last_active": get_ksa_time()}})
 
-    # تفعيل رابط الإحالة المباشر (Invite Deep Link)
     if len(args) > 1 and args[1] == 'invite':
         bot_settings = get_settings()
         ref_bonus = bot_settings.get('referral_bonus', 2)
@@ -298,41 +307,42 @@ def handle_instructions(call):
             "2FA المصادقة:\n\n"
             "xjqi 5sc4 ehby zvof aqf7 af65 g7uo 237x\n\n"
             "═══════════════════════\n\n"
-            "- الرجاء التمكين والتثبيت 2FA المصادقة هنا.\n"
-            "- في الصفحة التي قمت بزيارتها للتو، ابحث عن قسم خيارات الأمان وانقر عليه تطبيق المصادقة.\n"
-            "- انقر فوق الزر + إعداد تطبيق Authenticator.\n"
-            "- ستظهر على الشاشة لوحة منبثقة تحتوي على رمز QR مربع.\n"
-            "- ⚠️ لا تستخدم هاتفك لمسح رمز الاستجابة السريعة هذا. بدلاً من ذلك، انقر فوق النص أسفل رمز الاستجابة السريعة مباشرةً \"ألا يمكنك مسح هذا الرمز؟\" (لا يمكن مسحها ضوئيًا؟).\n"
-            "- في هذا الوقت، سيختفي رمز الاستجابة السريعة وستعرض الشاشة رسالة سلسلة رمز مكونة من 32 حرفًا (بما في ذلك الحروف والأرقام المكتوبة بشكل متتابع أو متباعدة). هذه هي سلسلة المفتاح السري 2FA المكونة من 32 حرفًا التي تبحث عنها.\n"
-            "- قم بتمييز هذه السلسلة المكونة من 32 حرفًا وانسخها واحفظها على الفور في مكان آمن (مثل المفكرة أو مدير كلمات المرور أو رمز التكوين الخاص بك).\n"
-            "- افتح علامة تبويب جديدة في المتصفح، وقم بزيارة صفحة 2fa.live، ثم الصق السلسلة المكونة من 32 حرفًا التي نسختها للتو واضغط على إرسال، وستقوم الصفحة على الفور بإنشاء رمز مكون من 6 أرقام.\n"
-            "- ارجع إلى شاشة Google، اضغط على التالي، أدخل الرمز المكون من 6 أرقام الذي تم إنشاؤه للتو من التطبيق في المربع الفارغ للتأكيد ثم انقر فوق يؤكد.\n"
+            "- الرجاء التمكين والتثبيت 2FA المصادقة هنا.\n\n"
+            "- في الصفحة التي قمت بزيارتها للتو، ابحث عن قسم خيارات الأمان وانقر عليه تطبيق المصادقة.\n\n"
+            "- انقر فوق الزر + إعداد تطبيق Authenticator.\n\n"
+            "- ستظهر على الشاشة لوحة منبثقة تحتوي على رمز QR مربع.\n\n"
+            "- ⚠️ لا تستخدم هاتفك لمسح رمز الاستجابة السريعة هذا. بدلاً من ذلك، انقر فوق النص أسفل رمز الاستجابة السريعة مباشرةً \"ألا يمكنك مسح هذا الرمز؟\" (لا يمكن مسحها ضوئيًا؟).\n\n"
+            "- في هذا الوقت، سيختفي رمز الاستجابة السريعة وستعرض الشاشة رسالة سلسلة رمز مكونة من 32 حرفًا (بما في ذلك الحروف والأرقام المكتوبة بشكل متتابع أو متباعدة). هذه هي سلسلة المفتاح السري 2FA المكونة من 32 حرفًا التي تبحث عنها.\n\n"
+            "- قم بتمييز هذه السلسلة المكونة من 32 حرفًا وانسخها واحفظها على الفور في مكان آمن (مثل المفكرة أو مدير كلمات المرور أو رمز التكوين الخاص بك).\n\n"
+            "- افتح علامة تبويب جديدة في المتصفح، وقم بزيارة صفحة 2fa.live، ثم الصق السلسلة المكونة من 32 حرفًا التي نسختها للتو واضغط على إرسال، وستقوم الصفحة على الفور بإنشاء رمز مكون من 6 أرقام.\n\n"
+            "- ارجع إلى شاشة Google، اضغط على التالي، أدخل الرمز المكون من 6 أرقام الذي تم إنشاؤه للتو من التطبيق في المربع الفارغ للتأكيد ثم انقر فوق يؤكد.\n\n"
             "- بعد تثبيت أداة المصادقة الثنائية، ارجع إلى الصفحة التي تحتوي على خيارات الأمان الأولى، ثم قم بالتمرير لأسفل وانقر فوق الزر. قم بتشغيل التحقق بخطوتين. ✅\n\n"
             "═══════════════════════\n\n"
-            "- إغلاق كافة سجلات الدفع هنا.\n"
-            "- في الصفحة التي قمت بزيارتها للتو، قم بالتمرير لأسفل إلى أسفل صفحة الإعدادات. سوف ترى الإدخال حالة الملف الشخصي للدفع.\n"
-            "- انقر على النص أغلق ملف تعريف الدفع (إغلاق ملف تعريف الدفع).\n"
+            "- إغلاق كافة سجلات الدفع هنا.\n\n"
+            "- في الصفحة التي قمت بزيارتها للتو، قم بالتمرير لأسفل إلى أسفل صفحة الإعدادات. سوف ترى الإدخال حالة الملف الشخصي للدفع.\n\n"
+            "- انقر على النص أغلق ملف تعريف الدفع (إغلاق ملف تعريف الدفع).\n\n"
             "- تابع خطوات التأكيد التالية حتى يتم إغلاق ملف تعريف الدفع بنجاح. ✅\n\n"
             "═══════════════════════\n\n"
-            "- مغادرة مجموعة العائلة إن وجدت هنا.\n"
-            "- انقر على الصفحة التي قمت بزيارتها للتو رمز القائمة 3 شرطات (أو 3 نقاط) في الزاوية اليسرى العليا (أو اليمين حسب الواجهة).\n"
+            "- مغادرة مجموعة العائلة إن وجدت هنا.\n\n"
+            "- انقر على الصفحة التي قمت بزيارتها للتو رمز القائمة 3 شرطات (أو 3 نقاط) في الزاوية اليسرى العليا (أو اليمين حسب الواجهة).\n\n"
             "- اختر البند اترك مجموعة العائلة وانتقل إلى خطوات التأكيد التالية. ✅\n\n"
             "═══════════════════════\n\n"
-            "⚠️ ملحوظة:\n"
-            "- يرجى عدم استخدام حساب Gmail تم إنشاؤه حديثًا لترقية Gemini Pro لأن نسبة الحظر تصل إلى 90%.\n"
-            "- يرجى التفكير بعناية عند استخدام حساب Gmail الرئيسي الخاص بك للترقية نظرًا لوجود خطر قفل الحساب.\n"
-            "- يرجى التأكد من اتباع كافة الخطوات المذكورة أعلاه لضمان أعلى نسبة نجاح.\n"
-            "- أعد المحاولة حتى 3 مرات فقط لحساب Gmail واحد.\n"
-            "- لا يوجد ضمان عند قفل الحساب. عندما تقوم بالترقية، فهذا يعني أنك تقبل جميع المخاطر المتعلقة بحسابك.\n"
-            "- لن تتمكن حسابات Gmail التي تستخدم حزمة Gemini Pro / Google One الصالحة من الترقية إلى Gemini Pro Pixel\n"
-            "- يمكن للحسابات المطلوبة لإعادة التحقق من حالة طالب SheerlD الخاصة بها أيضًا إعادة الترقية إلى حزمة Gemini Pro Pixel ولكن تحتاج إلى إلغاء حزمة الطالب الحالية، ثم تابع الخطوات المذكورة أعلاه للترقية. انظر تعليمات الإلغاء هنا. يكون هذا الرابط تحت هنا الرابط :\n"
+            "⚠️ ملحوظة:\n\n"
+            "- يرجى عدم استخدام حساب Gmail تم إنشاؤه حديثًا لترقية Gemini Pro لأن نسبة الحظر تصل إلى 90%.\n\n"
+            "- يرجى التفكير بعناية عند استخدام حساب Gmail الرئيسي الخاص بك للترقية نظرًا لوجود خطر قفل الحساب.\n\n"
+            "- يرجى التأكد من اتباع كافة الخطوات المذكورة أعلاه لضمان أعلى نسبة نجاح.\n\n"
+            "- أعد المحاولة حتى 3 مرات فقط لحساب Gmail واحد.\n\n"
+            "- لا يوجد ضمان عند قفل الحساب. عندما تقوم بالترقية، فهذا يعني أنك تقبل جميع المخاطر المتعلقة بحسابك.\n\n"
+            "- لن تتمكن حسابات Gmail التي تستخدم حزمة Gemini Pro / Google One الصالحة من الترقية إلى Gemini Pro Pixel\n\n"
+            "- يمكن للحسابات المطلوبة لإعادة التحقق من حالة طالب SheerlD الخاصة بها أيضًا إعادة الترقية إلى حزمة Gemini Pro Pixel ولكن تحتاج إلى إلغاء حزمة الطالب الحالية، ثم تابع الخطوات المذكورة أعلاه للترقية. انظر تعليمات الإلغاء هنا.\n"
             "https://t.me/SubGateSA/14?single\n\n"
             "═══════════════════════\n\n"
-            "- بعد ترقية حسابك بنجاح، يمكنك إضافة ما يصل إلى 5 أعضاء إلى مجموعة العائلة، وذلك باستخدام جميع ميزات حزمة Gemini Pro باستثناء بعض الميزات المتوفرة فقط في النسخة المدفوعة مثل Youtube Premium Lite...\n"
-            "- لإضافة أعضاء إلى مجموعة عائلتك دون ظهور الخطأ \"ليس في نفس البلد\"، يرجى إغلاق الملف الشخصي للمدفوعات الخاص بالحساب  هنا يظهر هذا الرابط تحت هنا وقم بتسجيل الدخول إلى حساب الدعوة والحساب المدعو على نفس الجهاز وتابع الدعوة.\n"
+            "- بعد ترقية حسابك بنجاح، يمكنك إضافة ما يصل إلى 5 أعضاء إلى مجموعة العائلة، وذلك باستخدام جميع ميزات حزمة Gemini Pro باستثناء بعض الميزات المتوفرة فقط في النسخة المدفوعة مثل Youtube Premium Lite...\n\n"
+            "- لإضافة أعضاء إلى مجموعة عائلتك دون ظهور الخطأ \"ليس في نفس البلد\"، يرجى إغلاق الملف الشخصي للمدفوعات الخاص بالحساب  هنا.\n"
             "https://pay.google.com/payment/home#settings\n\n"
+            "وقم بتسجيل الدخول إلى حساب الدعوة والحساب المدعو على نفس الجهاز وتابع الدعوة.\n\n"
             "═══════════════════════\n"
-            "بعد الانتهاء من جميع الخطوات حسب تعليمات استخدام زر /Gemini Pro لترقية حسابك."
+            "بعد الانتهاء من جميع الخطوات حسب تعليمات استخدام زر / Gemini Pro لترقية حسابك."
         )
         markup = InlineKeyboardMarkup()
         markup.add(InlineKeyboardButton("✨ فتح الخدمة", callback_data="open_srv_gemini"), InlineKeyboardButton("🔙 رجوع", callback_data="inst_back"))
@@ -353,11 +363,9 @@ def handle_open_srv_from_inst(call):
     user_id = call.from_user.id
     service = call.data.split('_')[2]
     
-    # تنظيف رسالة التعليمات لعدم إزعاج المستخدم
     try: bot.delete_message(chat_id=call.message.chat.id, message_id=call.message.message_id)
     except: pass
     
-    # فتح الخدمة المباشرة بذكاء
     mapping = {"youtube": BTN_YT, "spotify": BTN_SPOTIFY, "gemini": BTN_GEMINI}
     if service in mapping:
         process_service_request(user_id, mapping[service], call.message.chat.id)
@@ -369,19 +377,22 @@ def handle_open_srv_from_inst(call):
 # ==========================================
 @bot.callback_query_handler(func=lambda call: call.data.startswith('reply_'))
 def handle_reply_button(call):
-    if str(call.from_user.id) == str(ADMIN_ID):
-        target_id = call.data.split('_')[1]
-        admin_states[call.from_user.id] = {'action': 'reply_user', 'target': target_id}
-        bot.send_message(ADMIN_ID, f"✍️ <b>وضع الرد مفعل:</b>\nاكتب رسالتك الآن للعميل: <code>{target_id}</code>\n\n(لإلغاء الأمر أرسل /cancel)", parse_mode="HTML")
-        
-        markup = update_inline_button_text(call.message.reply_markup, call.data, "✅ تم الرد")
-        try: bot.edit_message_reply_markup(call.message.chat.id, call.message.message_id, reply_markup=markup)
-        except: pass
-        bot.answer_callback_query(call.id)
+    if str(call.from_user.id) != str(ADMIN_ID): return
+    if is_action_processed(call): return bot.answer_callback_query(call.id, "تم التنفيذ مسبقاً!")
+    
+    target_id = call.data.split('_')[1]
+    admin_states[call.from_user.id] = {'action': 'reply_user', 'target': target_id}
+    bot.send_message(ADMIN_ID, f"✍️ <b>وضع الرد مفعل:</b>\nاكتب رسالتك الآن للعميل: <code>{target_id}</code>\n\n(لإلغاء الأمر أرسل /cancel)", parse_mode="HTML")
+    
+    markup = update_inline_button_text(call.message.reply_markup, call.data, "✅ تم الرد")
+    try: bot.edit_message_reply_markup(call.message.chat.id, call.message.message_id, reply_markup=markup)
+    except: pass
+    bot.answer_callback_query(call.id)
 
 @bot.callback_query_handler(func=lambda call: call.data.startswith('srv_app_'))
 def handle_service_approve(call):
     if str(call.from_user.id) != str(ADMIN_ID): return bot.answer_callback_query(call.id, "⛔️ للآدمن فقط!", show_alert=True)
+    if is_action_processed(call): return bot.answer_callback_query(call.id, "تم التنفيذ مسبقاً!")
     
     parts = call.data.split('_')
     target_id = int(parts[2])
@@ -391,7 +402,6 @@ def handle_service_approve(call):
     
     email = "غير متوفر"
     if call.message.text and "الإيميل:" in call.message.text:
-        # استخراج الإيميل حتى ولو كان داخل وسوم html <code>
         match = re.search(r"الإيميل:\s*<[^>]+>([^<]+)</[^>]+>", call.message.text)
         if match: email = match.group(1).strip()
         else:
@@ -429,6 +439,7 @@ def handle_service_approve(call):
 @bot.callback_query_handler(func=lambda call: call.data.startswith('srv_rej_'))
 def handle_service_reject(call):
     if str(call.from_user.id) != str(ADMIN_ID): return
+    if is_action_processed(call): return bot.answer_callback_query(call.id, "تم التنفيذ مسبقاً!")
     parts = call.data.split('_'); target_id = parts[2]; price = parts[3]
     
     markup = InlineKeyboardMarkup(row_width=1)
@@ -444,6 +455,7 @@ def handle_service_reject(call):
 
 @bot.callback_query_handler(func=lambda call: call.data.startswith('srv_back_'))
 def handle_service_back(call):
+    # لا نقوم بوضع قفل ذري هنا لأنه مجرد تصفح
     parts = call.data.split('_'); target_id = parts[2]; price = parts[3]
     markup = InlineKeyboardMarkup(row_width=2)
     markup.add(
@@ -457,6 +469,7 @@ def handle_service_back(call):
 
 @bot.callback_query_handler(func=lambda call: call.data.startswith('srv_dorej_'))
 def handle_service_do_reject(call):
+    if is_action_processed(call): return bot.answer_callback_query(call.id, "تم التنفيذ مسبقاً!")
     parts = call.data.split('_'); reason_id = parts[2]; target_id = int(parts[3]); price = int(parts[4])
     
     if reason_id == '1':
@@ -516,6 +529,7 @@ def handle_buy_acc_confirm(call):
 @bot.callback_query_handler(func=lambda call: call.data.startswith('unban_temp_') or call.data.startswith('ban_perm_'))
 def handle_moderation_actions(call):
     if str(call.from_user.id) != str(ADMIN_ID): return bot.answer_callback_query(call.id, "⛔️ للآدمن فقط!", show_alert=True)
+    if is_action_processed(call): return bot.answer_callback_query(call.id, "تم التنفيذ مسبقاً!")
     parts = call.data.split('_'); action = parts[0]; target_id = int(parts[2])
     
     if action == 'unban':
@@ -685,6 +699,7 @@ def handle_deposit_no_proof(call):
 @bot.callback_query_handler(func=lambda call: call.data.startswith('dep_admin_'))
 def handle_admin_deposit_action(call):
     if str(call.from_user.id) != str(ADMIN_ID): return bot.answer_callback_query(call.id, "⛔️ للآدمن فقط!", show_alert=True)
+    if is_action_processed(call): return bot.answer_callback_query(call.id, "تم التنفيذ مسبقاً!")
     
     parts = call.data.split('_'); action = parts[2]; target_id = int(parts[3])
 
@@ -959,7 +974,7 @@ def handle_private_text(message):
     track_msg(user_id, message.message_id)
 
     if not is_admin and user_id in user_states and user_states[user_id].get('state') == 'waiting_deposit_amount':
-        if text in [BTN_YT, BTN_SPOTIFY, BTN_GEMINI, BTN_DAILY, BTN_DEPOSIT, BTN_CONTACT, BTN_ACCOUNT, BTN_INVITE, BTN_HELP, BTN_GUIDE, BTN_MAIN]:
+        if text in [BTN_YT, BTN_SPOTIFY, BTN_GEMINI, BTN_DAILY, BTN_DEPOSIT, BTN_ACCOUNT, BTN_INVITE, BTN_HELP, BTN_GUIDE, BTN_MAIN]:
             del user_states[user_id]['state']
         else:
             try: val = float(text.replace(',', '.'))
@@ -1062,8 +1077,9 @@ def handle_private_text(message):
                 except: pass
 
             elif action == 'change_referral':
+                bot_settings = get_settings()
                 old_ref = bot_settings.get("referral_bonus", 2.0)
-                new_ref = float(text)
+                new_ref = float(text.replace(',', '.'))
                 settings_collection.update_one({"_id": "bot_settings"}, {"$set": {"referral_bonus": new_ref}})
                 bot.send_message(user_id, f"✅ تم تغيير مكافأة الدعوة إلى {new_ref:g} نقطة.", reply_markup=admin_keyboard())
                 try:
@@ -1209,7 +1225,7 @@ def handle_private_text(message):
         bot.send_message(user_id, "🏠 مرحباً بك في الرئيسية.", reply_markup=main_keyboard())
 
     elif text == BTN_INVITE:
-        ref_bonus = bot_settings.get('referral_bonus', 2)
+        ref_bonus = bot_settings.get('referral_bonus', 2.0)
         invite_text = (
             f"🎉 <b>دعوة خاصة لك!</b>\n"
             f"✨ اكتشف أفضل الاشتراكات والخدمات الرقمية، واستمتع بعروض حصرية ومزايا مميزة. 🚀\n\n"
@@ -1217,9 +1233,6 @@ def handle_private_text(message):
             f"https://t.me/{bot.get_me().username}?start={user_id}"
         )
         bot.send_message(user_id, invite_text, parse_mode="HTML")
-
-    elif text == BTN_CONTACT:
-        bot.send_message(user_id, "💬 للتواصل المباشر مع الإدارة:\n\n<a href='https://t.me/bdallhshay7'>اضغط هنا للتواصل مع الدعم</a>", parse_mode="HTML")
 
     elif text == BTN_GUIDE:
         markup = InlineKeyboardMarkup(row_width=1).add(
@@ -1251,12 +1264,12 @@ def handle_private_text(message):
         track_msg(user_id, m.message_id)
 
     elif text in [BTN_YT, BTN_SPOTIFY, BTN_GEMINI]:
-        process_service_request(user_id, text, message.chat.id)
+        process_service_request(user_id, text)
 
-# ==========================================
-# --- نظام API لاستقبال بيانات النماذج (باستخدام <code> للنسخ السريع) ---
-# ==========================================
-@app.route('/submit_form', methods=['POST'])
+    elif text in [BTN_HELP]:
+        bot.send_message(user_id, "⏳ سيتم إضافة المحتوى قريباً...")
+
+@bot.route('/submit_form', methods=['POST'])
 def submit_form():
     data = request.json
     user_id, msg_id, service_type, form_data = int(data.get('uid')), int(data.get('msg_id')), data.get('service', 'yt'), data.get('dataString')
