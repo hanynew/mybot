@@ -299,7 +299,6 @@ def send_welcome(message):
     else:
         users_collection.update_one({"user_id": user_id}, {"$set": {"last_active": get_ksa_time()}})
 
-    # تفعيل رابط الإحالة المباشر
     if len(args) > 1 and args[1] == 'invite':
         bot_settings = get_settings()
         ref_bonus = bot_settings.get('referral_bonus', 2.0)
@@ -418,8 +417,6 @@ def handle_set_acc(call):
     if is_action_processed(call): return bot.answer_callback_query(call.id, "تم التنفيذ مسبقاً!")
     method = call.data.split('_')[2]
     admin_states[call.from_user.id] = {'action': f'set_acc_{method}'}
-    
-    # حل مشكلة زر الإلغاء بحيث يتم التعرف عليه بشكل صحيح
     bot.send_message(call.from_user.id, f"أرسل البيانات الجديدة لحساب ({method.upper()}) الآن:\n(أو أرسل /cancel للإلغاء)")
     bot.answer_callback_query(call.id)
 
@@ -448,30 +445,62 @@ def handle_service_approve(call):
     user = users_collection.find_one({"user_id": target_id})
     rem_points = user.get("points", 0) if user else 0
     
-    email = "غير متوفر"
-    if call.message.text and "الإيميل:" in call.message.text:
-        match = re.search(r"الإيميل:\s*<[^>]+>([^<]+)</[^>]+>", call.message.text)
-        if match: email = match.group(1).strip()
-        else:
-            match_no_tag = re.search(r"الإيميل:\s*([^\n]+)", call.message.text)
-            if match_no_tag: email = match_no_tag.group(1).strip()
-        
-    msg_template = (
-        f"🤖 أتمتة Gemini Pro Pixel\n\n"
-        f"{{identifier}}\n\n"
-        f"────────────────────────\n\n"
-        f"✅ 1. بريد إلكتروني\n✅ 2. تحقق من البريد العشوائي\n✅ 3. كلمة المرور\n"
-        f"✅ 4. المصادقة بخطوتين\n✅ 5. طريقة الدفع\n✅ 6. إضافة الدفع\n"
-        f"✅ 7. تحقق من العرض\n✅ 8. احصل على العروض\n✅ 9. معالجة الدفع\n✅ 10. مكتمل\n\n"
-        f"────────────────────────\n\n"
-        f"🎉 تم تفعيل Google One بنجاح!\n\n"
-        f"✅ لقد تم تفعيل حساب Google الخاص بك لـ Google One.\n\n"
-        f"💰 العملات المتبقية:\n{rem_points:g} عملة\n\n"
-        f"{{footer}}"
-    )
-    
-    msg_user = msg_template.format(identifier=f"📧 البريد الإلكتروني:\n{email}", footer="⏱ شكرًا لانتظاركم.")
-    msg_channel = msg_template.format(identifier=f"🆔 آيدي المستخدم:\n{target_id}", footer="🌟 عميل مميز. 👑")
+    msg_text = call.message.text or ""
+    is_youtube = "يوتيوب" in msg_text
+    is_spotify = "سبوتيفاي" in msg_text
+
+    if is_youtube:
+        msg_user = (
+            f"🤖 أتمتة YouTube Premium\n"
+            f"🆔 آيدي المستخدم: {target_id}\n"
+            f"────────────────────────\n"
+            f"✅ 1. طريقة الدفع\n✅ 2. إضافة الدفع\n✅ 3. تحقق من العرض\n"
+            f"✅ 4. احصل على العروض\n✅ 5. معالجة الدفع\n✅ 6. مكتمل\n"
+            f"────────────────────────\n"
+            f"🎉 تم تفعيل YouTube Premium بنجاح!\n"
+            f"✅ لقد تم تخطي التحقق الخاص بك لـ YouTube Premium.\n"
+            f"💰 العملات المتبقية:\n{rem_points:g} عملة\n"
+            f"🌟 عميل مميز. 👑"
+        )
+        msg_channel = msg_user
+    elif is_spotify:
+        msg_user = (
+            f"🤖 أتمتة Spotify Premium\n"
+            f"🆔 آيدي المستخدم: {target_id}\n"
+            f"────────────────────────\n"
+            f"✅ 1. طريقة الدفع\n✅ 2. إضافة الدفع\n✅ 3. تحقق من العرض\n"
+            f"✅ 4. احصل على العروض\n✅ 5. معالجة الدفع\n✅ 6. مكتمل\n"
+            f"────────────────────────\n"
+            f"🎉 تم تفعيل Spotify Premium بنجاح!\n"
+            f"✅ لقد تم تخطي التحقق الخاص بك على Spotify.\n"
+            f"💰 العملات المتبقية:\n{rem_points:g} عملة\n"
+            f"🌟 عميل مميز. 👑"
+        )
+        msg_channel = msg_user
+    else:
+        email = "غير متوفر"
+        if "الإيميل:" in msg_text:
+            match = re.search(r"الإيميل:\s*<[^>]+>([^<]+)</[^>]+>", msg_text)
+            if match: email = match.group(1).strip()
+            else:
+                match_no_tag = re.search(r"الإيميل:\s*([^\n]+)", msg_text)
+                if match_no_tag: email = match_no_tag.group(1).strip()
+            
+        msg_template = (
+            f"🤖 أتمتة Gemini Pro Pixel\n\n"
+            f"{{identifier}}\n\n"
+            f"────────────────────────\n\n"
+            f"✅ 1. بريد إلكتروني\n✅ 2. تحقق من البريد العشوائي\n✅ 3. كلمة المرور\n"
+            f"✅ 4. المصادقة بخطوتين\n✅ 5. طريقة الدفع\n✅ 6. إضافة الدفع\n"
+            f"✅ 7. تحقق من العرض\n✅ 8. احصل على العروض\n✅ 9. معالجة الدفع\n✅ 10. مكتمل\n\n"
+            f"────────────────────────\n\n"
+            f"🎉 تم تفعيل Google One بنجاح!\n\n"
+            f"✅ لقد تم تفعيل حساب Google الخاص بك لـ Google One.\n\n"
+            f"💰 العملات المتبقية:\n{rem_points:g} عملة\n\n"
+            f"{{footer}}"
+        )
+        msg_user = msg_template.format(identifier=f"📧 البريد الإلكتروني:\n{email}", footer="⏱ شكرًا لانتظاركم.")
+        msg_channel = msg_template.format(identifier=f"🆔 آيدي المستخدم:\n{target_id}", footer="🌟 عميل مميز. 👑")
     
     try: bot.send_message(target_id, msg_user)
     except: pass
@@ -1022,6 +1051,20 @@ def handle_private_text(message):
     check_anti_abuse(user_id, message.from_user.first_name, "تكرار إرسال رسائل")
     track_msg(user_id, message.message_id)
 
+    # --- معالجة أمر إلغاء الموحد لجميع المستخدمين والمديرين ---
+    if text == '/cancel':
+        canceled = False
+        if user_id in admin_states:
+            del admin_states[user_id]
+            canceled = True
+        if user_id in user_states:
+            del user_states[user_id]
+            canceled = True
+        
+        kb = admin_keyboard() if is_admin else main_keyboard()
+        bot.send_message(user_id, "✅ تم إلغاء العملية الحالية بنجاح.", reply_markup=kb)
+        return
+
     if not is_admin and user_id in user_states and user_states[user_id].get('state') == 'waiting_deposit_amount':
         if text in [BTN_YT, BTN_SPOTIFY, BTN_GEMINI, BTN_DAILY, BTN_DEPOSIT, BTN_ACCOUNT, BTN_INVITE, BTN_HELP, BTN_GUIDE, BTN_MAIN]:
             del user_states[user_id]['state']
@@ -1043,26 +1086,14 @@ def handle_private_text(message):
             del user_states[user_id]['state']
             return
 
-    # استلام التحديثات الديناميكية للبنوك للإدارة
     if is_admin and user_id in admin_states and admin_states[user_id].get('action').startswith('set_acc_'):
         method = admin_states[user_id]['action'].split('_')[2]
-        # حل مشكلة أمر الإلغاء ليعمل هنا
-        if text == '/cancel':
-            del admin_states[user_id]
-            bot.send_message(user_id, "🚫 تم إلغاء الأمر.", reply_markup=admin_keyboard())
-            return
-
         settings_collection.update_one({"_id": "bot_settings"}, {"$set": {f"acc_{method}": text}})
         bot.send_message(user_id, "✅ تم حفظ بيانات الحساب الجديدة بنجاح، وستظهر للعملاء من الآن فصاعداً.", reply_markup=admin_keyboard())
         del admin_states[user_id]
         return
 
     if is_admin and user_id in admin_states:
-        if text == '/cancel':
-            del admin_states[user_id]
-            bot.send_message(user_id, "🚫 تم إلغاء الأمر.", reply_markup=admin_keyboard())
-            return
-        
         state = admin_states[user_id]
         action = state['action']
         try:
@@ -1102,6 +1133,61 @@ def handle_private_text(message):
                     except: pass
                 bot.send_message(user_id, f"✅ تمت الإذاعة بنجاح.", reply_markup=admin_keyboard())
             
+            # --- إصلاح أزرار تعديل سعر النقطة (SAR, YER, USDT) ---
+            elif action == 'set_price_sar':
+                try: new_val = float(text.replace(',', '.'))
+                except:
+                    bot.send_message(user_id, "⚠️ يرجى إدخال رقم صحيح.")
+                    return
+                settings_collection.update_one({"_id": "bot_settings"}, {"$set": {"point_price_sar": new_val}})
+                bot.send_message(user_id, f"✅ تم تحديث سعر النقطة بنجاح.\nالسعر الجديد: SAR: {new_val:g}", reply_markup=admin_keyboard())
+                try:
+                    channel_msg = (
+                        f"📢 <b>تحديث جديد في الأسعار</b>\n"
+                        f"✨ تم تحديث أسعار الشحن بنجاح.\n"
+                        f"💎 أصبحت الأسعار الجديدة متاحة الآن داخل البوت.\n"
+                        f"🚀 اطلب خدمتك الآن بكل سهولة."
+                    )
+                    markup = InlineKeyboardMarkup().add(InlineKeyboardButton("🛍️ اشتر الآن ⚡", url=f"https://t.me/{bot.get_me().username}"))
+                    bot.send_message(CHANNEL_USERNAME, channel_msg, reply_markup=markup)
+                except: pass
+
+            elif action == 'set_price_yer':
+                try: new_val = float(text.replace(',', '.'))
+                except:
+                    bot.send_message(user_id, "⚠️ يرجى إدخال رقم صحيح.")
+                    return
+                settings_collection.update_one({"_id": "bot_settings"}, {"$set": {"point_price_yer": new_val}})
+                bot.send_message(user_id, f"✅ تم تحديث سعر النقطة بنجاح.\nالسعر الجديد: YER: {new_val:g}", reply_markup=admin_keyboard())
+                try:
+                    channel_msg = (
+                        f"📢 <b>تحديث جديد في الأسعار</b>\n"
+                        f"✨ تم تحديث أسعار الشحن بنجاح.\n"
+                        f"💎 أصبحت الأسعار الجديدة متاحة الآن داخل البوت.\n"
+                        f"🚀 اطلب خدمتك الآن بكل سهولة."
+                    )
+                    markup = InlineKeyboardMarkup().add(InlineKeyboardButton("🛍️ اشتر الآن ⚡", url=f"https://t.me/{bot.get_me().username}"))
+                    bot.send_message(CHANNEL_USERNAME, channel_msg, reply_markup=markup)
+                except: pass
+
+            elif action == 'set_price_usdt':
+                try: new_val = float(text.replace(',', '.'))
+                except:
+                    bot.send_message(user_id, "⚠️ يرجى إدخال رقم صحيح.")
+                    return
+                settings_collection.update_one({"_id": "bot_settings"}, {"$set": {"points_per_usdt": new_val}})
+                bot.send_message(user_id, f"✅ تم تحديث سعر النقطة بنجاح.\nالسعر الجديد: USDT: {new_val:g}", reply_markup=admin_keyboard())
+                try:
+                    channel_msg = (
+                        f"📢 <b>تحديث جديد في الأسعار</b>\n"
+                        f"✨ تم تحديث أسعار الشحن بنجاح.\n"
+                        f"💎 أصبحت الأسعار الجديدة متاحة الآن داخل البوت.\n"
+                        f"🚀 اطلب خدمتك الآن بكل سهولة."
+                    )
+                    markup = InlineKeyboardMarkup().add(InlineKeyboardButton("🛍️ اشتر الآن ⚡", url=f"https://t.me/{bot.get_me().username}"))
+                    bot.send_message(CHANNEL_USERNAME, channel_msg, reply_markup=markup)
+                except: pass
+
             elif action == 'change_price_yt':
                 new_price = int(text)
                 settings_collection.update_one({"_id": "bot_settings"}, {"$set": {"price_yt": new_price}})
