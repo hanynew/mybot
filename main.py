@@ -35,7 +35,7 @@ def get_settings():
     s = settings_collection.find_one({"_id": "bot_settings"})
     defaults = {
         "_id": "bot_settings", "price_yt": 15, "price_spotify": 15, "price_gemini": 15, 
-        "referral_bonus": 2, "point_price_sar": 1.0, "point_price_yer": 100.0, "points_per_usdt": 15.0,
+        "referral_bonus": 2.0, "point_price_sar": 1.0, "point_price_yer": 100.0, "points_per_usdt": 15.0,
         "acc_sar": "الاسم\nBARQ SAFE ACCOUNT\nرقم الحساب (IBAN)\n<code>SA47 3010 0991 1063 3587 3581</code>",
         "acc_yer": "<code>YE123456789</code>",
         "acc_binance": "<code>BE1234567</code>",
@@ -255,7 +255,7 @@ def send_welcome(message):
     # تفعيل رابط الإحالة المباشر
     if len(args) > 1 and args[1] == 'invite':
         bot_settings = get_settings()
-        ref_bonus = bot_settings.get('referral_bonus', 2)
+        ref_bonus = bot_settings.get('referral_bonus', 2.0)
         invite_text = (
             f"🎉 <b>دعوة خاصة لك!</b>\n"
             f"✨ اكتشف أفضل الاشتراكات والخدمات الرقمية، واستمتع بعروض حصرية ومزايا مميزة. 🚀\n\n"
@@ -903,7 +903,7 @@ def advanced_group_moderation(message):
             try: bot.restrict_chat_member(message.chat.id, user_id, until_date=until_date, can_send_messages=False)
             except: pass
             if ADMIN_ID:
-                markup = InlineKeyboardMarkup().row(InlineKeyboardButton("🔓 رفع الكتم", callback_data=f"unban_temp_{user_id}"), InlineKeyboardButton("⛔ حظر نهائي وطرد", callback_data=f"ban_perm_revoke_{user_id}"))
+                markup = InlineKeyboardMarkup().row(InlineKeyboardButton("🔓 رفع الكتم", callback_data=f"unban_temp_{user_id}"), InlineKeyboardButton("⛔ حظر نهائي وطرد", callback_data=f"ban_perm_{user_id}"))
                 try: bot.send_message(ADMIN_ID, f"🚨 <b>اكتشاف مخالفة وتم الكتم!</b>\n\n👤 الاسم: {message.from_user.first_name}\n🆔 الآيدي: <code>{user_id}</code>\n📌 نوع المخالفة: <b>{violation_type}</b>\n💬 المحتوى:\n<code>{content_display}</code>\n⏰ الوقت: {time_str}\n\n⚡️ <i>الإجراء: تم الحذف والكتم لمدة ساعتين في المجموعة (دون حظره من البوت).</i>", reply_markup=markup)
                 except: pass
 
@@ -1015,7 +1015,7 @@ def handle_private_text(message):
                 bot.send_message(user_id, f"✅ تم فك الحظر عن {target_id}", reply_markup=admin_keyboard())
                 try: bot.unban_chat_member(GROUP_USERNAME, target_id, only_if_banned=True)
                 except: pass
-                try: bot.send_message(target_id, "🎉 <b>أهلاً بعودتك!</b>\n\nيسعدنا إخبارك بأنه تم رفع الحظر والقيود عن حسابك بنجاح. يمكنك الآن العودة للاستمتاع بخدمات متجرنا والتفاعل في مجموعتنا. ✨\n\nنرجو منك الالتزام بالقوانين لضمان تجربة رائعة للجميع. نورتنا! 🤝", parse_mode="HTML")
+                try: bot.send_message(target_id, "🎉 <b>أهلاً بعودتك!</b>\n\nيسعدنا إخبارك بأنه تم رفع الحظر والقيود عن حساب بنجاح. يمكنك الآن العودة للاستمتاع بخدمات متجرنا والتفاعل في مجموعتنا. ✨\n\nنرجو منك الالتزام بالقوانين لضمان تجربة رائعة للجميع. نورتنا! 🤝", parse_mode="HTML")
                 except: pass
             elif action == 'add_points':
                 parts = text.split(); target_id = int(parts[0]); pts = float(parts[1])
@@ -1267,7 +1267,7 @@ def handle_private_text(message):
     elif text in [BTN_HELP]:
         bot.send_message(user_id, "⏳ سيتم إضافة المحتوى قريباً...")
 
-@bot.route('/submit_form', methods=['POST'])
+@app.route('/submit_form', methods=['POST'])
 def submit_form():
     data = request.json
     user_id, msg_id, service_type, form_data = int(data.get('uid')), int(data.get('msg_id')), data.get('service', 'yt'), data.get('dataString')
