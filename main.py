@@ -248,7 +248,6 @@ def open_admin_panel(message):
     if str(user_id) == str(ADMIN_ID):
         bot.send_message(message.chat.id, "🛠️ <b>مرحباً بك في لوحة تحكم الإدارة:</b>\nاختر الإجراء الذي تريده من الأزرار بالأسفل 👇", reply_markup=admin_keyboard())
     else:
-        # صمت تام، بدون رسائل خطأ للمستخدم. وإرسال إنذار للأدمن
         first_name = message.from_user.first_name
         username = f"@{message.from_user.username}" if message.from_user.username else "لا يوجد"
         now = get_ksa_time()
@@ -416,8 +415,11 @@ def handle_open_srv_from_inst(call):
 @bot.callback_query_handler(func=lambda call: call.data.startswith('set_acc_'))
 def handle_set_acc(call):
     if str(call.from_user.id) != str(ADMIN_ID): return bot.answer_callback_query(call.id, "⛔️ للآدمن فقط!", show_alert=True)
+    if is_action_processed(call): return bot.answer_callback_query(call.id, "تم التنفيذ مسبقاً!")
     method = call.data.split('_')[2]
     admin_states[call.from_user.id] = {'action': f'set_acc_{method}'}
+    
+    # حل مشكلة زر الإلغاء بحيث يتم التعرف عليه بشكل صحيح
     bot.send_message(call.from_user.id, f"أرسل البيانات الجديدة لحساب ({method.upper()}) الآن:\n(أو أرسل /cancel للإلغاء)")
     bot.answer_callback_query(call.id)
 
@@ -1044,6 +1046,12 @@ def handle_private_text(message):
     # استلام التحديثات الديناميكية للبنوك للإدارة
     if is_admin and user_id in admin_states and admin_states[user_id].get('action').startswith('set_acc_'):
         method = admin_states[user_id]['action'].split('_')[2]
+        # حل مشكلة أمر الإلغاء ليعمل هنا
+        if text == '/cancel':
+            del admin_states[user_id]
+            bot.send_message(user_id, "🚫 تم إلغاء الأمر.", reply_markup=admin_keyboard())
+            return
+
         settings_collection.update_one({"_id": "bot_settings"}, {"$set": {f"acc_{method}": text}})
         bot.send_message(user_id, "✅ تم حفظ بيانات الحساب الجديدة بنجاح، وستظهر للعملاء من الآن فصاعداً.", reply_markup=admin_keyboard())
         del admin_states[user_id]
@@ -1100,7 +1108,7 @@ def handle_private_text(message):
                 bot.send_message(user_id, f"✅ تم تغيير سعر خدمة يوتيوب إلى {new_price} نقطة.", reply_markup=admin_keyboard())
                 try:
                     channel_msg = f"📢 <b>تحديث مميز في أسعار الخدمات! 📺</b>\n\nتم تعديل سعر اشتراك <b>يوتيوب بريميوم</b> ليصبح فقط <b>{new_price}</b> نقطة!\nسارع بطلب تفعيلك الفوري الآن عبر البوت 👇"
-                    markup = InlineKeyboardMarkup().add(InlineKeyboardButton("🛍️ اطلب الآن ⚡", url=f"https://t.me/{bot.get_me().username}"))
+                    markup = InlineKeyboardMarkup().add(InlineKeyboardButton("🛍️ اشتر الآن ⚡", url=f"https://t.me/{bot.get_me().username}"))
                     bot.send_message(CHANNEL_USERNAME, channel_msg, reply_markup=markup)
                 except: pass
 
@@ -1110,7 +1118,7 @@ def handle_private_text(message):
                 bot.send_message(user_id, f"✅ تم تغيير سعر خدمة سبوتيفاي إلى {new_price} نقطة.", reply_markup=admin_keyboard())
                 try:
                     channel_msg = f"📢 <b>تحديث مميز في أسعار الخدمات! 🎵</b>\n\nتم تعديل سعر اشتراك <b>سبوتيفاي بريميوم</b> ليصبح فقط <b>{new_price}</b> نقطة!\nسارع بطلب تفعيلك الفوري الآن عبر البوت 👇"
-                    markup = InlineKeyboardMarkup().add(InlineKeyboardButton("🛍️ اطلب الآن ⚡", url=f"https://t.me/{bot.get_me().username}"))
+                    markup = InlineKeyboardMarkup().add(InlineKeyboardButton("🛍️ اشتر الآن ⚡", url=f"https://t.me/{bot.get_me().username}"))
                     bot.send_message(CHANNEL_USERNAME, channel_msg, reply_markup=markup)
                 except: pass
 
@@ -1120,7 +1128,7 @@ def handle_private_text(message):
                 bot.send_message(user_id, f"✅ تم تغيير سعر خدمة جيميناي إلى {new_price} نقطة.", reply_markup=admin_keyboard())
                 try:
                     channel_msg = f"📢 <b>تحديث مميز في أسعار الخدمات! ✨</b>\n\nتم تعديل سعر اشتراك <b>جيميناي برو</b> ليصبح فقط <b>{new_price}</b> نقطة!\nسارع بطلب تفعيلك الفوري الآن عبر البوت 👇"
-                    markup = InlineKeyboardMarkup().add(InlineKeyboardButton("🛍️ اطلب الآن ⚡", url=f"https://t.me/{bot.get_me().username}"))
+                    markup = InlineKeyboardMarkup().add(InlineKeyboardButton("🛍️ اشتر الآن ⚡", url=f"https://t.me/{bot.get_me().username}"))
                     bot.send_message(CHANNEL_USERNAME, channel_msg, reply_markup=markup)
                 except: pass
 
@@ -1370,8 +1378,8 @@ def setup_webhook():
     bot.remove_webhook()
     bot.set_webhook(url=f"https://{request.host}/{BOT_TOKEN}")
     try:
-        bot.delete_my_commands()
-        if ADMIN_ID: bot.set_my_commands([BotCommand("admin", "لوحة تحكم الإدارة")], scope=BotCommandScopeChat(int(ADMIN_ID)))
+        bot.set_my_commands([BotCommand("start", "تشغيل البوت")])
+        if ADMIN_ID: bot.set_my_commands([BotCommand("start", "تشغيل البوت"), BotCommand("admin", "لوحة تحكم الإدارة")], scope=BotCommandScopeChat(int(ADMIN_ID)))
     except: pass
     return f"✅ تم تشغيل البوت وربطه بنجاح!", 200
 
